@@ -3,6 +3,7 @@ mod cube_colors;
 mod particles_wip;
 mod random_colors;
 mod terrain;
+mod vertex_displacement;
 
 use bevy::prelude::*;
 
@@ -10,7 +11,8 @@ fn main() {
     // terrain::run();
     // cube_colors::run();
     // random_colors::run();
-    compute_mesh::run();
+    // compute_mesh::run();
+    vertex_displacement::run();
 
     // App::new()
     //     .add_plugins(DefaultPlugins)
