@@ -4879,6 +4879,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bevy-inspector-egui",
+ "bytemuck",
  "inquire",
  "noise",
  "rand 0.10.1",
