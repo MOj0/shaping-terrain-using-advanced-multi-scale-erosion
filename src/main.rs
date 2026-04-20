@@ -1,7 +1,10 @@
+mod compute_and_vertex;
 mod compute_mesh;
 mod cube_colors;
+mod gpu_readback;
 mod particles_wip;
 mod random_colors;
+mod storage_buffer;
 mod terrain;
 mod vertex_displacement;
 
@@ -12,7 +15,10 @@ fn main() {
     // cube_colors::run();
     // random_colors::run();
     // compute_mesh::run();
-    vertex_displacement::run();
+    // vertex_displacement::run();
+    // storage_buffer::run();
+    // gpu_readback::run();
+    compute_and_vertex::run();
 
     // App::new()
     //     .add_plugins(DefaultPlugins)
