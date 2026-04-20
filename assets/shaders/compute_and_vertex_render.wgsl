@@ -21,10 +21,12 @@ struct VertexOutput {
 fn vertex(vertex: Vertex) -> VertexOutput {
     var out: VertexOutput;
 
-    let a = buffer_data[0];
-    let b = buffer_data[1];
-    let c = buffer_data[2];
-    let local_position = vertex.position + vec3<f32>(f32(a), f32(a), 2.0 * -f32(a));
+    // Read data from SSBO
+    let x = buffer_data[0];
+    let y = buffer_data[1];
+    let z = buffer_data[2];
+    
+    let local_position = vertex.position + vec3<f32>(f32(x), f32(y), 2.0 * -f32(z));
 
     var world_from_local = mesh_functions::get_world_from_local(vertex.instance_index);
     out.world_position = mesh_functions::mesh_position_local_to_world(world_from_local, vec4(local_position, 1.0));

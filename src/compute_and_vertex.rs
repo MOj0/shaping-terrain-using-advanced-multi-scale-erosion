@@ -3,7 +3,6 @@ use bevy::{
     render::{
         Render, RenderApp, RenderStartup, RenderSystems,
         extract_resource::{ExtractResource, ExtractResourcePlugin},
-        gpu_readback::{Readback, ReadbackComplete},
         render_asset::RenderAssets,
         render_graph::{self, RenderGraph, RenderLabel},
         render_resource::{binding_types::storage_buffer, *},
@@ -23,11 +22,7 @@ const RENDER_SHADER_PATH: &str = "shaders/compute_and_vertex_render.wgsl";
 const BUFFER_LEN: usize = 3;
 
 /// Plugin for setting up the render node
-struct GpuReadbackPlugin;
-
-/// Resource containing the handle to our buffer
-#[derive(Resource, ExtractResource, Clone)]
-struct ReadbackBuffer(Handle<ShaderStorageBuffer>);
+struct ComputeAndVertexPlugin;
 
 /// Resource containing the shader bind group
 #[derive(Resource)]
@@ -48,10 +43,9 @@ struct ComputeNodeLabel;
 #[derive(Default)]
 struct ComputeNode {}
 
-// NOTE: This is only for updating this on the CPU...
-// // Holds handles to the custom materials
-// #[derive(Resource)]
-// struct CustomMaterialHandle(Handle<MyVertexMaterial>);
+// Holds handle to the SSBO
+#[derive(Resource, ExtractResource, Clone)]
+struct ShaderStorageBufferHandle(Handle<ShaderStorageBuffer>);
 
 // This struct defines the data that will be passed to your shader
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
@@ -74,8 +68,8 @@ pub fn run() {
     App::new()
         .add_plugins((
             DefaultPlugins,
-            GpuReadbackPlugin,
-            ExtractResourcePlugin::<ReadbackBuffer>::default(),
+            ComputeAndVertexPlugin,
+            ExtractResourcePlugin::<ShaderStorageBufferHandle>::default(),
             MaterialPlugin::<MyVertexMaterial>::default(),
         ))
         .insert_resource(ClearColor(Color::srgb_u8(102, 178, 212)))
@@ -109,36 +103,25 @@ fn shader_setup(
     // Create a (storage) buffer with some dummy data
     let buffer: Vec<u32> = (0..BUFFER_LEN as u32).collect();
 
-    let mut shader_storage_buffer = ShaderStorageBuffer::from(buffer);
-    // COPY_SRC -> can copy the buffer back to the source (CPU)
-    shader_storage_buffer.buffer_description.usage |= BufferUsages::COPY_SRC;
+    let shader_storage_buffer = ShaderStorageBuffer::from(buffer);
 
     let buffer_handle = buffers.add(shader_storage_buffer);
 
-    let my_vertex_material_handle = MyVertexMaterial {
+    commands.insert_resource(ShaderStorageBufferHandle(buffer_handle.clone()));
+
+    // Create the custom material and add it to the materials assets
+    let my_vertex_material_handle = materials.add(MyVertexMaterial {
         buffer_handle: buffer_handle.clone(),
-    };
+    });
 
-    // Component which will print the data once it is available for the CPU
-    commands
-        .spawn(Readback::buffer(buffer_handle.clone()))
-        .observe(|event: On<ReadbackComplete>| {
-            // Do something with the data on the CPU
-            let data: Vec<u32> = event.to_shader_type();
-            info!("Buffer {:?}", data);
-        });
-
-    // We will use this when preparing the bind group
-    commands.insert_resource(ReadbackBuffer(buffer_handle.clone()));
-
-    // Spawn a sphere with MyVertexMaterial
+    // Spawn a sphere with the custom material
     commands.spawn((
         Mesh3d(meshes.add(Sphere::new(1.0).mesh().uv(64, 32))),
-        MeshMaterial3d(materials.add(my_vertex_material_handle)),
+        MeshMaterial3d(my_vertex_material_handle.clone()),
     ));
 }
 
-impl Plugin for GpuReadbackPlugin {
+impl Plugin for ComputeAndVertexPlugin {
     fn build(&self, app: &mut App) {
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
@@ -161,7 +144,7 @@ impl Plugin for GpuReadbackPlugin {
     }
 }
 
-impl GpuReadbackPlugin {
+impl ComputeAndVertexPlugin {
     fn init_compute_pipeline(
         mut commands: Commands,
         asset_server: Res<AssetServer>,
@@ -199,16 +182,18 @@ impl GpuReadbackPlugin {
 
     fn prepare_bind_group(
         mut commands: Commands,
-        pipeline: Res<ComputePipeline>,
-        render_device: Res<RenderDevice>,
-        pipeline_cache: Res<PipelineCache>,
-        buffer: Res<ReadbackBuffer>,
-        buffers: Res<RenderAssets<GpuShaderStorageBuffer>>, // NOTE: GpuShaderStorageBuffer implements the RenderAsset trait
+        r_pipeline: Res<ComputePipeline>,
+        r_render_device: Res<RenderDevice>,
+        r_pipeline_cache: Res<PipelineCache>,
+        r_custom_material_handle: Res<ShaderStorageBufferHandle>,
+        r_gpu_buffers: Res<RenderAssets<GpuShaderStorageBuffer>>, // NOTE: GpuShaderStorageBuffer implements the RenderAsset trait
     ) {
-        let buffer = buffers.get(&buffer.0).unwrap();
-        let bind_group = render_device.create_bind_group(
+        // Get the SSBO with the ShaderStorageBufferHandle
+        let buffer = r_gpu_buffers.get(&r_custom_material_handle.0).unwrap();
+
+        let bind_group = r_render_device.create_bind_group(
             None,
-            &pipeline_cache.get_bind_group_layout(&pipeline.layout),
+            &r_pipeline_cache.get_bind_group_layout(&r_pipeline.layout),
             &BindGroupEntries::single(buffer.buffer.as_entire_buffer_binding()),
         );
 
