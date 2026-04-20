@@ -11,14 +11,14 @@ mod vertex_displacement;
 use bevy::prelude::*;
 
 fn main() {
-    // terrain::run();
+    terrain::run();
     // cube_colors::run();
     // random_colors::run();
     // compute_mesh::run();
     // vertex_displacement::run();
     // storage_buffer::run();
     // gpu_readback::run();
-    compute_and_vertex::run();
+    // compute_and_vertex::run();
 
     // App::new()
     //     .add_plugins(DefaultPlugins)

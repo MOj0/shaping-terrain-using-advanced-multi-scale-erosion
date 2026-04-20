@@ -1,265 +1,381 @@
 use bevy::{
     asset::RenderAssetUsages,
-    mesh::{Indices, PrimitiveTopology},
+    ecs::schedule::common_conditions,
+    mesh::{Indices, Mesh},
     prelude::*,
     render::{
         Render, RenderApp, RenderStartup, RenderSystems,
         extract_resource::{ExtractResource, ExtractResourcePlugin},
+        render_asset::RenderAssets,
         render_graph::{self, RenderGraph, RenderLabel},
-        render_resource::{binding_types::storage_buffer, *},
-        renderer::{RenderContext, RenderDevice, RenderQueue},
+        render_resource::{binding_types, *},
+        renderer::{RenderContext, RenderDevice},
+        storage::{GpuShaderStorageBuffer, ShaderStorageBuffer},
+        texture::GpuImage,
     },
-    shader::PipelineCacheError,
+    shader::ShaderRef,
 };
-use std::borrow::Cow;
 
-const SHADER_ASSET_PATH: &str = "shaders/terrain.wgsl";
+/// Path to the compute shader
+const COMPUTE_SHADER_PATH: &str = "shaders/terrain.wgsl";
 
-const GRID_WIDTH: usize = 128;
-const GRID_HEIGHT: usize = 128;
+/// Path to the render shader
+const RENDER_SHADER_PATH: &str = "shaders/terrain_render.wgsl";
 
-const DISPLAY_FACTOR: u32 = 4;
-const SIZE: UVec2 = UVec2::new(1280 / DISPLAY_FACTOR, 720 / DISPLAY_FACTOR);
-const WORKGROUP_SIZE: u32 = 8;
+/// Length of the buffer sent to the GPU
+const BUFFER_LEN: usize = 4;
 
-#[derive(Resource, Clone, ExtractResource, ShaderType)]
-struct TerrainStorageBuffer {
-    vertices: [Vec3; GRID_WIDTH * GRID_HEIGHT],
+/// Plugin for setting up the render node
+struct ComputeAndVertexPlugin;
+
+/// Resource containing the shader bind group
+#[derive(Resource)]
+struct GpuBufferBindGroup(BindGroup);
+
+/// Compute shader pipeline
+#[derive(Resource)]
+struct ComputePipeline {
+    layout: BindGroupLayoutDescriptor,
+    pipeline: CachedComputePipelineId,
 }
 
-#[derive(Resource)]
-struct TerrainPipeline {
-    texture_bind_group_layout: BindGroupLayoutDescriptor,
-    init_pipeline: CachedComputePipelineId,
-}
-
-#[derive(Resource)]
-struct TerrainBindGroups([BindGroup; 1]);
-
+/// Label to identify the node in the render graph
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
-struct TerrainLabel;
+struct ComputeNodeLabel;
 
-enum TerrainState {
-    Loading,
-    Init,
+/// The node that will execute the compute shader
+#[derive(Default)]
+struct ComputeNode {}
+
+#[derive(Resource, ExtractResource, Clone)]
+struct ImageHandle(Handle<Image>);
+
+#[derive(Message, Default)]
+struct ImageLoaded;
+
+#[derive(Resource)]
+struct InitMessageSent;
+
+// Holds handle to the SSBO
+#[derive(Resource, ExtractResource, Clone)]
+struct ShaderStorageBufferHandle(Handle<ShaderStorageBuffer>);
+
+// This struct defines the data that will be passed to your shader
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+struct TerrainMaterial {
+    #[storage(0)]
+    buffer_handle: Handle<ShaderStorageBuffer>,
 }
 
-struct TerrainNode {
-    state: TerrainState,
+impl Material for TerrainMaterial {
+    fn vertex_shader() -> ShaderRef {
+        RENDER_SHADER_PATH.into()
+    }
+
+    fn fragment_shader() -> ShaderRef {
+        RENDER_SHADER_PATH.into()
+    }
 }
 
 pub fn run() {
     App::new()
-        .add_plugins(DefaultPlugins)
-        .add_plugins(terrain_plugin)
-        .add_systems(Startup, setup)
+        .add_plugins((
+            DefaultPlugins,
+            // ComputeAndVertexPlugin, // TODO: Uncomment and continue with erosion shader
+            ExtractResourcePlugin::<ShaderStorageBufferHandle>::default(),
+            ExtractResourcePlugin::<ImageHandle>::default(),
+            MaterialPlugin::<TerrainMaterial>::default(),
+        ))
+        .add_message::<ImageLoaded>()
+        .insert_resource(ClearColor(Color::srgb_u8(102, 178, 212)))
+        .add_systems(Startup, (setup, shader_setup))
         .add_systems(
             Update,
-            print_terrain_storage_buffer.run_if(
-                bevy::input::common_conditions::input_just_pressed(KeyCode::KeyB),
-            ),
+            image_loaded_observer.run_if(common_conditions::not(
+                common_conditions::resource_exists::<InitMessageSent>,
+            )),
+        )
+        .add_systems(
+            Update,
+            init_height_resource.run_if(common_conditions::on_message::<ImageLoaded>),
         )
         .run();
 }
 
-fn terrain_plugin(app: &mut App) {
-    // Extract the game of life image resource from the main world into the render world
-    // for operation on by the compute shader and display on the sprite.
-    app.add_plugins(ExtractResourcePlugin::<TerrainStorageBuffer>::default());
-
-    let render_app = app.sub_app_mut(RenderApp);
-    render_app
-        .add_systems(RenderStartup, init_terrain_pipeline)
-        .add_systems(
-            Render,
-            prepare_bind_group.in_set(RenderSystems::PrepareBindGroups),
-        );
-
-    let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
-    render_graph.add_node(TerrainLabel, TerrainNode::default());
-    render_graph.add_node_edge(TerrainLabel, bevy::render::graph::CameraDriverLabel);
-}
-
-fn setup(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    let mut vertices = [Vec3::ZERO; GRID_WIDTH * GRID_HEIGHT];
-    let vertex_count = vertices.len();
-
-    let mut counter = 0;
-    for z in 0..GRID_HEIGHT {
-        for x in 0..GRID_WIDTH {
-            let xf = x as f32;
-            let zf = z as f32;
-
-            vertices[counter] = Vec3::new(xf, 0.0, zf);
-            counter += 1;
-        }
-    }
-
-    commands.insert_resource(TerrainStorageBuffer { vertices });
-
-    let indices = generate_grid_indices(GRID_WIDTH as u32, GRID_HEIGHT as u32);
-
-    let mut terrain_mesh = Mesh::new(
-        PrimitiveTopology::TriangleList,
-        bevy::asset::RenderAssetUsages::default(),
-    );
-
-    terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, Vec::from(vertices));
-
-    terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 1.0, 0.0]; vertex_count]);
-
-    // TODO: Why do we need this?
-    terrain_mesh.insert_indices(Indices::U32(indices));
-
-    commands.spawn((
-        Mesh3d(meshes.add(terrain_mesh)),
-        MeshMaterial3d(materials.add(StandardMaterial::from_color(Color::srgb(0.3, 0.7, 0.3)))),
-    ));
-
+fn setup(mut commands: Commands) {
     // Camera
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(64.0, 50.0, 140.0).looking_at(Vec3::new(64.0, 0.0, 64.0), Vec3::Y),
+        Transform::from_xyz(0.0, 5.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
     // Light
     commands.spawn((
         DirectionalLight {
-            color: Color::srgb(0.9, 0.9, 0.9),
+            shadows_enabled: true,
             ..default()
         },
-        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -1.0, -0.5, 0.0)),
+        Transform::from_xyz(0.0, 4.0, 0.0),
     ));
 }
 
-fn generate_grid_indices(width: u32, height: u32) -> Vec<u32> {
-    let mut indices = Vec::new();
-
-    for z in 0..height - 1 {
-        for x in 0..width - 1 {
-            let i = z * width + x;
-
-            indices.extend_from_slice(&[i, i + width, i + 1, i + 1, i + width, i + width + 1]);
-        }
-    }
-
-    indices
-}
-
-fn print_terrain_storage_buffer(r_terrain_storage_buffer: Res<TerrainStorageBuffer>) {
-    info!("{:?}", r_terrain_storage_buffer.into_inner().vertices[0]);
-}
-
-fn init_terrain_pipeline(
+fn shader_setup(
     mut commands: Commands,
+    mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
     asset_server: Res<AssetServer>,
-    pipeline_cache: Res<PipelineCache>,
 ) {
-    let texture_bind_group_layout = BindGroupLayoutDescriptor::new(
-        "TerrainLabel",
-        &BindGroupLayoutEntries::sequential(
-            ShaderStages::COMPUTE,
-            (storage_buffer::<TerrainStorageBuffer>(false),),
-        ),
-    );
-    let shader = asset_server.load(SHADER_ASSET_PATH);
-    let init_pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
-        layout: vec![texture_bind_group_layout.clone()],
-        shader: shader.clone(),
-        entry_point: Some(Cow::from("init")),
-        ..default()
-    });
+    // Create a (storage) buffer with some dummy data
+    let buffer: Vec<u32> = (0..BUFFER_LEN as u32).collect();
 
-    commands.insert_resource(TerrainPipeline {
-        texture_bind_group_layout,
-        init_pipeline,
-    });
+    let shader_storage_buffer = ShaderStorageBuffer::from(buffer);
+
+    let buffer_handle = buffers.add(shader_storage_buffer);
+
+    commands.insert_resource(ShaderStorageBufferHandle(buffer_handle.clone()));
+
+    let image_handle: Handle<Image> = asset_server.load("heightfields/mountains.png");
+
+    commands.insert_resource(ImageHandle(image_handle));
 }
 
-fn prepare_bind_group(
+fn image_loaded_observer(
     mut commands: Commands,
-    pipeline: Res<TerrainPipeline>,
-    r_terrain_storage_buffer: Res<TerrainStorageBuffer>,
-    render_device: Res<RenderDevice>,
-    pipeline_cache: Res<PipelineCache>,
-    queue: Res<RenderQueue>,
+    mut images: ResMut<Assets<Image>>,
+    image_handle: Res<ImageHandle>,
+    mut message_writer: MessageWriter<ImageLoaded>,
 ) {
-    let mut terrain_storage_buffer = StorageBuffer::from(r_terrain_storage_buffer.into_inner());
-    terrain_storage_buffer.add_usages(BufferUsages::COPY_SRC);
-    terrain_storage_buffer.write_buffer(&render_device, &queue);
-
-    let bind_group_0 = render_device.create_bind_group(
-        None,
-        &pipeline_cache.get_bind_group_layout(&pipeline.texture_bind_group_layout),
-        &BindGroupEntries::sequential((&terrain_storage_buffer,)),
-    );
-
-    commands.insert_resource(TerrainBindGroups([bind_group_0]));
-}
-
-impl Default for TerrainNode {
-    fn default() -> Self {
-        Self {
-            state: TerrainState::Loading,
-        }
+    if images.get_mut(&image_handle.0).is_some() {
+        commands.insert_resource(InitMessageSent);
+        message_writer.write_default();
+    } else {
+        info!("image not yet loaded...");
     }
 }
 
-impl render_graph::Node for TerrainNode {
-    fn update(&mut self, world: &mut World) {
-        let pipeline = world.resource::<TerrainPipeline>();
-        let pipeline_cache = world.resource::<PipelineCache>();
+fn init_height_resource(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    image_handle: Res<ImageHandle>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<TerrainMaterial>>,
+    r_buffer_handle: Res<ShaderStorageBufferHandle>,
+) {
+    let Some(image) = images.get_mut(&image_handle.0) else {
+        info!("image not yet loaded...");
+        return;
+    };
 
-        // if the corresponding pipeline has loaded, transition to the next stage
-        match self.state {
-            TerrainState::Loading => {
-                match pipeline_cache.get_compute_pipeline_state(pipeline.init_pipeline) {
-                    CachedPipelineState::Ok(_) => {
-                        self.state = TerrainState::Init;
-                    }
-                    // If the shader hasn't loaded yet, just wait.
-                    CachedPipelineState::Err(PipelineCacheError::ShaderNotLoaded(_)) => {}
-                    CachedPipelineState::Err(err) => {
-                        panic!("Initializing assets/{SHADER_ASSET_PATH}:\n{err}")
-                    }
-                    _ => {}
-                }
-            }
-            TerrainState::Init => {}
-        }
+    let heights: Vec<f32> = match &image.data {
+        Some(data) => data
+            .iter()
+            .step_by(4)
+            .map(|height| *height as f32 / 256.0)
+            .collect(),
+        None => panic!("whoops, no data"),
+    };
+
+    let terrain = generate_terrain(heights, 256, 0.1, 7.0);
+
+    let buffer_handle = &r_buffer_handle.0;
+
+    // Create the custom material and add it to the materials assets
+    let terrain_material_handle = materials.add(TerrainMaterial {
+        buffer_handle: buffer_handle.clone(),
+    });
+
+    // Spawn the plane
+    commands.spawn((
+        Name::new("plane"),
+        Mesh3d(meshes.add(terrain)),
+        MeshMaterial3d(terrain_material_handle.clone()),
+        Transform::from_translation(Vec3::new(-4.0, -1.0, 0.0)),
+    ));
+
+    info!("Init done");
+}
+
+impl Plugin for ComputeAndVertexPlugin {
+    fn build(&self, app: &mut App) {
+        let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
+            return;
+        };
+
+        render_app
+            .add_systems(
+                RenderStartup,
+                (
+                    Self::init_compute_pipeline,
+                    Self::add_compute_render_graph_node,
+                ),
+            )
+            .add_systems(
+                Render,
+                Self::prepare_bind_group
+                    .in_set(RenderSystems::PrepareBindGroups)
+                    .run_if(not(resource_exists::<GpuBufferBindGroup>)),
+            );
+    }
+}
+
+impl ComputeAndVertexPlugin {
+    fn init_compute_pipeline(
+        mut commands: Commands,
+        asset_server: Res<AssetServer>,
+        pipeline_cache: Res<PipelineCache>,
+    ) {
+        // Make a descriptor for the bind group
+        let layout = BindGroupLayoutDescriptor::new(
+            "",
+            &BindGroupLayoutEntries::sequential(
+                ShaderStages::COMPUTE,
+                (
+                    binding_types::storage_buffer::<Vec<u32>>(false),
+                    binding_types::texture_storage_2d(
+                        TextureFormat::R32Uint,
+                        StorageTextureAccess::ReadOnly,
+                    ),
+                ),
+            ),
+        );
+
+        // Load the shader
+        let shader = asset_server.load(COMPUTE_SHADER_PATH);
+
+        // Make a new compute pipeline
+        let pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
+            label: Some("Our pipeline".into()),
+            layout: vec![layout.clone()],
+            shader: shader.clone(),
+            ..default()
+        });
+
+        // We will use this when writing the render code in the Render Graph's Node
+        commands.insert_resource(ComputePipeline { layout, pipeline });
     }
 
-    fn run(
+    fn add_compute_render_graph_node(mut render_graph: ResMut<RenderGraph>) {
+        // Add the compute node as a top-level node to the render graph.
+        // This means it will only get executed once per frame.
+        render_graph.add_node(ComputeNodeLabel, ComputeNode::default());
+    }
+
+    fn prepare_bind_group(
+        mut commands: Commands,
+        r_pipeline: Res<ComputePipeline>,
+        r_render_device: Res<RenderDevice>,
+        r_pipeline_cache: Res<PipelineCache>,
+        r_custom_material_handle: Res<ShaderStorageBufferHandle>,
+        r_image_handle: Res<ImageHandle>,
+        r_gpu_buffers: Res<RenderAssets<GpuShaderStorageBuffer>>, // NOTE: GpuShaderStorageBuffer implements the RenderAsset trait
+        r_gpu_images: Res<RenderAssets<GpuImage>>,
+    ) {
+        // Get the SSBO with the ShaderStorageBufferHandle
+        let buffer = r_gpu_buffers.get(&r_custom_material_handle.0).unwrap();
+        let image = r_gpu_images.get(&r_image_handle.0).unwrap();
+
+        let bind_group = r_render_device.create_bind_group(
+            None,
+            &r_pipeline_cache.get_bind_group_layout(&r_pipeline.layout),
+            &BindGroupEntries::sequential((
+                buffer.buffer.as_entire_buffer_binding(),
+                image.texture_view.into_binding(),
+            )),
+        );
+
+        // We will use this when writing the render code in the Render Graph's Node
+        commands.insert_resource(GpuBufferBindGroup(bind_group));
+    }
+}
+
+impl render_graph::Node for ComputeNode {
+    fn run<'w>(
         &self,
         _graph: &mut render_graph::RenderGraphContext,
-        render_context: &mut RenderContext,
-        world: &World,
+        render_context: &mut RenderContext<'w>,
+        world: &'w World,
     ) -> Result<(), render_graph::NodeRunError> {
-        let bind_groups = &world.resource::<TerrainBindGroups>().0;
         let pipeline_cache = world.resource::<PipelineCache>();
-        let pipeline = world.resource::<TerrainPipeline>();
+        let pipeline = world.resource::<ComputePipeline>();
+        let bind_group = world.resource::<GpuBufferBindGroup>();
 
-        let mut pass = render_context
-            .command_encoder()
-            .begin_compute_pass(&ComputePassDescriptor::default());
+        if let Some(init_pipeline) = pipeline_cache.get_compute_pipeline(pipeline.pipeline) {
+            let mut pass =
+                render_context
+                    .command_encoder()
+                    .begin_compute_pass(&ComputePassDescriptor {
+                        label: Some("our pipeline"),
+                        ..default()
+                    });
 
-        // select the pipeline based on the current state
-        match self.state {
-            TerrainState::Loading => {}
-            TerrainState::Init => {
-                let init_pipeline = pipeline_cache
-                    .get_compute_pipeline(pipeline.init_pipeline)
-                    .unwrap();
-                pass.set_bind_group(0, &bind_groups[0], &[]);
-                pass.set_pipeline(init_pipeline);
-                pass.dispatch_workgroups(SIZE.x / WORKGROUP_SIZE, SIZE.y / WORKGROUP_SIZE, 1);
-            }
+            pass.set_bind_group(0, &bind_group.0, &[]);
+            pass.set_pipeline(init_pipeline);
+            pass.dispatch_workgroups(BUFFER_LEN as u32, 1, 1);
         }
 
         Ok(())
     }
+}
+
+fn generate_terrain(
+    height_data: Vec<f32>,
+    size: usize,
+    width_scale: f32,
+    height_scale: f32,
+) -> Mesh {
+    let mut positions = Vec::with_capacity(size * size);
+    let mut normals = Vec::with_capacity(size * size);
+    let mut uvs = Vec::with_capacity(size * size);
+    let mut indices = Vec::new();
+
+    // Generate vertices
+    for z in 0..size {
+        for x in 0..size {
+            let i = z * size + x;
+            let height = height_data[i];
+
+            positions.push([
+                x as f32 * width_scale,
+                height * height_scale,
+                z as f32 * width_scale,
+            ]);
+
+            normals.push([0.0, 1.0, 0.0]); // placeholder (we'll fix later)
+
+            uvs.push([x as f32 / (size - 1) as f32, z as f32 / (size - 1) as f32]);
+        }
+    }
+
+    // Generate indices (two triangles per quad)
+    for z in 0..(size - 1) {
+        for x in 0..(size - 1) {
+            let i = z * size + x;
+
+            let i0 = i as u32;
+            let i1 = (i + 1) as u32;
+            let i2 = (i + size) as u32;
+            let i3 = (i + size + 1) as u32;
+
+            // Triangle 1
+            indices.push(i0);
+            indices.push(i2);
+            indices.push(i1);
+
+            // Triangle 2
+            indices.push(i1);
+            indices.push(i2);
+            indices.push(i3);
+        }
+    }
+
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
+
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_indices(Indices::U32(indices));
+
+    mesh
 }
