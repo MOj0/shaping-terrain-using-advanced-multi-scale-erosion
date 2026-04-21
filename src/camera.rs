@@ -22,7 +22,8 @@ impl Plugin for CameraOrbitPlugin {
     }
 }
 
-#[derive(Debug, Resource)]
+#[derive(Debug, Resource, Reflect)]
+#[reflect(Resource)]
 struct CameraSettings {
     pub orbit_distance: f32,
     pub pitch_speed: f32,
@@ -33,10 +34,10 @@ struct CameraSettings {
 impl Default for CameraSettings {
     fn default() -> Self {
         Self {
-            orbit_distance: 50.0,
+            orbit_distance: 80.0,
             pitch_speed: 0.003,
             yaw_speed: 0.004,
-            target: Vec3::ZERO,
+            target: Vec3::new(46.0, 27.0, 135.0),
         }
     }
 }
@@ -87,7 +88,7 @@ fn zoom(
     mouse_scroll: Res<AccumulatedMouseScroll>,
 ) {
     // Get scroll delta, also invert
-    let scroll = -mouse_scroll.delta.y;
+    let scroll = -mouse_scroll.delta.y * 5.0;
 
     // Update the orbit distance in settings resource
     camera_settings.orbit_distance += scroll;

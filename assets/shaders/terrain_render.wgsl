@@ -63,8 +63,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     let height = f32(buffer_data[vertex.vertex_index]) * 0.05;
     
     // let local_position = apply_noise_displacement(vertex.position, vertex.normal);
-    // let local_position = vertex.position + vertex.normal * height;
-    let local_position = vertex.position;
+    let local_position = vertex.position + vertex.normal * height;
 
     var world_from_local = mesh_functions::get_world_from_local(vertex.instance_index);
     out.world_position = mesh_functions::mesh_position_local_to_world(world_from_local, vec4(local_position, 1.0));
