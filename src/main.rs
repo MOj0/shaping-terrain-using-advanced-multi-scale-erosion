@@ -1,44 +1,39 @@
-mod camera_orbit;
-mod compute_and_vertex;
-mod compute_mesh;
-mod cube_colors;
-mod gpu_readback;
-mod particles_wip;
-mod random_colors;
-mod storage_buffer;
-mod terrain;
-mod vertex_displacement;
-
 use bevy::prelude::*;
+use bevy_inspector_egui::bevy_egui;
+use bevy_inspector_egui::quick::WorldInspectorPlugin;
+
+mod camera;
+mod terrain;
 
 fn main() {
-    terrain::run();
-    // cube_colors::run();
-    // random_colors::run();
-    // compute_mesh::run();
-    // vertex_displacement::run();
-    // storage_buffer::run();
-    // gpu_readback::run();
-    // compute_and_vertex::run();
-    // camera_orbit::run();
-
-    // App::new()
-    //     .add_plugins(DefaultPlugins)
-    //     .add_systems(Startup, logging_shenanigans)
-    //     .run();
+    App::new()
+        .add_plugins((
+            DefaultPlugins,
+            bevy_egui::EguiPlugin::default(),
+            WorldInspectorPlugin::default().run_if(
+                bevy::input::common_conditions::input_toggle_active(true, KeyCode::Tab),
+            ),
+            terrain::TerrainPlugin,
+            camera::CameraOrbitPlugin,
+        ))
+        .insert_resource(ClearColor(Color::srgb_u8(102, 178, 212)))
+        .add_systems(Startup, setup)
+        .run();
 }
 
-fn logging_shenanigans() {
-    let a = 1.0;
-    let b = 2;
-    let c = 123;
+fn setup(mut commands: Commands) {
+    // Camera
+    commands.spawn((
+        Camera3d::default(),
+        Transform::from_xyz(0.0, 5.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
 
-    info!(?a, %a, ?a, ?a, "processing mesh");
-
-    info!(
-        target: "a different target in the logging system",
-        ip = ?a,
-        b,
-        ?c,
-    );
+    // Light
+    commands.spawn((
+        DirectionalLight {
+            shadows_enabled: true,
+            ..default()
+        },
+        Transform::from_xyz(0.0, 4.0, 0.0),
+    ));
 }

@@ -1,7 +1,6 @@
 use bevy::{
     asset::RenderAssetUsages,
     ecs::schedule::common_conditions,
-    input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
     mesh::{Indices, Mesh},
     prelude::*,
     render::{
@@ -16,6 +15,31 @@ use bevy::{
     },
     shader::ShaderRef,
 };
+
+pub struct TerrainPlugin;
+
+impl Plugin for TerrainPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_plugins((
+            // ComputeAndVertexPlugin, // TODO: Uncomment and continue with erosion shader
+            ExtractResourcePlugin::<ShaderStorageBufferHandle>::default(),
+            ExtractResourcePlugin::<ImageHandle>::default(),
+            MaterialPlugin::<TerrainMaterial>::default(),
+        ))
+        .add_message::<ImageLoaded>()
+        .add_systems(Startup, shader_setup)
+        .add_systems(
+            Update,
+            image_loaded_observer.run_if(common_conditions::not(
+                common_conditions::resource_exists::<InitMessageSent>,
+            )),
+        )
+        .add_systems(
+            Update,
+            init_height_resource.run_if(common_conditions::on_message::<ImageLoaded>),
+        );
+    }
+}
 
 /// Path to the compute shader
 const COMPUTE_SHADER_PATH: &str = "shaders/terrain.wgsl";
@@ -78,81 +102,6 @@ impl Material for TerrainMaterial {
     }
 }
 
-#[derive(Debug, Resource)]
-struct CameraSettings {
-    pub orbit_distance: f32,
-    pub pitch_speed: f32,
-    pub yaw_speed: f32,
-    pub target: Vec3,
-}
-
-impl Default for CameraSettings {
-    fn default() -> Self {
-        Self {
-            orbit_distance: 50.0,
-            pitch_speed: 0.003,
-            yaw_speed: 0.004,
-            target: Vec3::ZERO,
-        }
-    }
-}
-
-pub fn run() {
-    App::new()
-        .add_plugins((
-            DefaultPlugins,
-            // ComputeAndVertexPlugin, // TODO: Uncomment and continue with erosion shader
-            ExtractResourcePlugin::<ShaderStorageBufferHandle>::default(),
-            ExtractResourcePlugin::<ImageHandle>::default(),
-            MaterialPlugin::<TerrainMaterial>::default(),
-        ))
-        .add_message::<ImageLoaded>()
-        .init_resource::<CameraSettings>()
-        .insert_resource(ClearColor(Color::srgb_u8(102, 178, 212)))
-        .add_systems(Startup, (setup, shader_setup))
-        .add_systems(
-            Update,
-            image_loaded_observer.run_if(common_conditions::not(
-                common_conditions::resource_exists::<InitMessageSent>,
-            )),
-        )
-        .add_systems(
-            Update,
-            init_height_resource.run_if(common_conditions::on_message::<ImageLoaded>),
-        )
-        .add_systems(Update, zoom)
-        .add_systems(
-            Update,
-            orbit.run_if(bevy::input::common_conditions::input_pressed(
-                MouseButton::Left,
-            )),
-        )
-        .add_systems(
-            Update,
-            pan.run_if(bevy::input::common_conditions::input_pressed(
-                MouseButton::Right,
-            )),
-        )
-        .run();
-}
-
-fn setup(mut commands: Commands) {
-    // Camera
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_xyz(0.0, 5.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-
-    // Light
-    commands.spawn((
-        DirectionalLight {
-            shadows_enabled: true,
-            ..default()
-        },
-        Transform::from_xyz(0.0, 4.0, 0.0),
-    ));
-}
-
 fn shader_setup(
     mut commands: Commands,
     mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
@@ -179,8 +128,8 @@ fn image_loaded_observer(
     mut message_writer: MessageWriter<ImageLoaded>,
 ) {
     if images.get_mut(&image_handle.0).is_some() {
-        commands.insert_resource(InitMessageSent);
         message_writer.write_default();
+        commands.insert_resource(InitMessageSent);
     } else {
         info!("image not yet loaded...");
     }
@@ -411,59 +360,4 @@ fn generate_terrain(
     mesh.compute_normals();
 
     mesh
-}
-
-fn orbit(
-    mut camera: Single<&mut Transform, With<Camera>>,
-    camera_settings: Res<CameraSettings>,
-    mouse_motion: Res<AccumulatedMouseMotion>,
-) {
-    let delta = -mouse_motion.delta; // Invert the delta for something more sensible
-
-    // Mouse motion is one of the few inputs that should not be multiplied by delta time,
-    // as we are already receiving the full movement since the last frame was rendered. Multiplying
-    // by delta time here would make the movement slower that it should be.
-    let delta_pitch = delta.y * camera_settings.pitch_speed;
-    let delta_yaw = delta.x * camera_settings.yaw_speed;
-
-    // Obtain the existing pitch, yaw, and roll values from the transform.
-    let (yaw, pitch, roll) = camera.rotation.to_euler(EulerRot::YXZ);
-
-    let yaw = yaw + delta_yaw;
-    let pitch = pitch + delta_pitch;
-    camera.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll);
-
-    // Adjust the translation to maintain the correct orientation toward the orbit target.
-    // In our example it's a static target, but this could easily be customized.
-    camera.translation = camera_settings.target - camera.forward() * camera_settings.orbit_distance;
-}
-
-fn zoom(
-    mut camera: Single<&mut Transform, With<Camera>>,
-    mut camera_settings: ResMut<CameraSettings>,
-    mouse_scroll: Res<AccumulatedMouseScroll>,
-) {
-    // Get scroll delta, also invert
-    let scroll = -mouse_scroll.delta.y;
-
-    // Update the orbit distance in settings resource
-    camera_settings.orbit_distance += scroll;
-
-    // Update camera's translation
-    camera.translation = camera_settings.target - camera.forward() * camera_settings.orbit_distance;
-}
-
-fn pan(
-    mut camera: Single<&mut Transform, With<Camera>>,
-    mut camera_settings: ResMut<CameraSettings>,
-    mouse_motion: Res<AccumulatedMouseMotion>,
-) {
-    // Get delta
-    let delta = mouse_motion.delta * 0.01;
-
-    // Update the orbit distance in settings resource
-    camera_settings.target += camera.rotation * Vec3::new(-delta.x, delta.y, 0.0);
-
-    // Update camera's translation
-    camera.translation = camera_settings.target - camera.forward() * camera_settings.orbit_distance;
 }
