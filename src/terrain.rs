@@ -1,6 +1,7 @@
 use bevy::{
     asset::RenderAssetUsages,
     ecs::schedule::common_conditions,
+    input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
     mesh::{Indices, Mesh},
     prelude::*,
     render::{
@@ -77,6 +78,23 @@ impl Material for TerrainMaterial {
     }
 }
 
+#[derive(Debug, Resource)]
+struct CameraSettings {
+    pub orbit_distance: f32,
+    pub pitch_speed: f32,
+    pub yaw_speed: f32,
+}
+
+impl Default for CameraSettings {
+    fn default() -> Self {
+        Self {
+            orbit_distance: 50.0,
+            pitch_speed: 0.003,
+            yaw_speed: 0.004,
+        }
+    }
+}
+
 pub fn run() {
     App::new()
         .add_plugins((
@@ -87,6 +105,7 @@ pub fn run() {
             MaterialPlugin::<TerrainMaterial>::default(),
         ))
         .add_message::<ImageLoaded>()
+        .init_resource::<CameraSettings>()
         .insert_resource(ClearColor(Color::srgb_u8(102, 178, 212)))
         .add_systems(Startup, (setup, shader_setup))
         .add_systems(
@@ -98,6 +117,13 @@ pub fn run() {
         .add_systems(
             Update,
             init_height_resource.run_if(common_conditions::on_message::<ImageLoaded>),
+        )
+        .add_systems(Update, zoom)
+        .add_systems(
+            Update,
+            orbit.run_if(bevy::input::common_conditions::input_pressed(
+                MouseButton::Left,
+            )),
         )
         .run();
 }
@@ -378,4 +404,45 @@ fn generate_terrain(
     mesh.insert_indices(Indices::U32(indices));
 
     mesh
+}
+
+fn orbit(
+    mut camera: Single<&mut Transform, With<Camera>>,
+    camera_settings: Res<CameraSettings>,
+    mouse_motion: Res<AccumulatedMouseMotion>,
+) {
+    let delta = -mouse_motion.delta; // Invert the delta for something more sensible
+
+    // Mouse motion is one of the few inputs that should not be multiplied by delta time,
+    // as we are already receiving the full movement since the last frame was rendered. Multiplying
+    // by delta time here would make the movement slower that it should be.
+    let delta_pitch = delta.y * camera_settings.pitch_speed;
+    let delta_yaw = delta.x * camera_settings.yaw_speed;
+
+    // Obtain the existing pitch, yaw, and roll values from the transform.
+    let (yaw, pitch, roll) = camera.rotation.to_euler(EulerRot::YXZ);
+
+    let yaw = yaw + delta_yaw;
+    let pitch = pitch + delta_pitch;
+    camera.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll);
+
+    // Adjust the translation to maintain the correct orientation toward the orbit target.
+    // In our example it's a static target, but this could easily be customized.
+    let target = Vec3::ZERO;
+    camera.translation = target - camera.forward() * camera_settings.orbit_distance;
+}
+
+fn zoom(
+    mut camera: Single<&mut Transform, With<Camera>>,
+    mut camera_settings: ResMut<CameraSettings>,
+    mouse_scroll: Res<AccumulatedMouseScroll>,
+) {
+    // Get scroll delta, also invert
+    let scroll = -mouse_scroll.delta.y;
+
+    // Update the orbit distance in settings resource
+    camera_settings.orbit_distance += scroll;
+
+    // Update camera's translation
+    camera.translation = -camera.forward() * camera_settings.orbit_distance;
 }

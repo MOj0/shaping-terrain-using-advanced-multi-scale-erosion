@@ -1,3 +1,4 @@
+mod camera_orbit;
 mod compute_and_vertex;
 mod compute_mesh;
 mod cube_colors;
@@ -19,6 +20,7 @@ fn main() {
     // storage_buffer::run();
     // gpu_readback::run();
     // compute_and_vertex::run();
+    // camera_orbit::run();
 
     // App::new()
     //     .add_plugins(DefaultPlugins)
