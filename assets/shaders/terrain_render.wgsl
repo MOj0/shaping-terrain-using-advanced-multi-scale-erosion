@@ -15,7 +15,7 @@ struct Vertex {
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) world_position: vec4<f32>,
-    @location(1) color: vec4<f32>,
+    @location(1) normal: vec3<f32>,
 };
 
 // Simple hash function for noise
@@ -70,12 +70,12 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     out.world_position = mesh_functions::mesh_position_local_to_world(world_from_local, vec4(local_position, 1.0));
     out.clip_position = position_world_to_clip(out.world_position.xyz);
 
-    out.color = vec4<f32>(vertex.normal, 1.0);
+    out.normal = vertex.normal;
 
     return out;
 }
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
-    return in.color;
+    return vec4(0.2 * (vec3(3.0) + 2.0 * in.normal), 1.0);
 }

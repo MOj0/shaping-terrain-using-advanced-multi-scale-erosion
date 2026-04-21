@@ -83,6 +83,7 @@ struct CameraSettings {
     pub orbit_distance: f32,
     pub pitch_speed: f32,
     pub yaw_speed: f32,
+    pub target: Vec3,
 }
 
 impl Default for CameraSettings {
@@ -91,6 +92,7 @@ impl Default for CameraSettings {
             orbit_distance: 50.0,
             pitch_speed: 0.003,
             yaw_speed: 0.004,
+            target: Vec3::ZERO,
         }
     }
 }
@@ -123,6 +125,12 @@ pub fn run() {
             Update,
             orbit.run_if(bevy::input::common_conditions::input_pressed(
                 MouseButton::Left,
+            )),
+        )
+        .add_systems(
+            Update,
+            pan.run_if(bevy::input::common_conditions::input_pressed(
+                MouseButton::Right,
             )),
         )
         .run();
@@ -399,9 +407,8 @@ fn generate_terrain(
     );
 
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_indices(Indices::U32(indices));
+    mesh.compute_normals();
 
     mesh
 }
@@ -428,8 +435,7 @@ fn orbit(
 
     // Adjust the translation to maintain the correct orientation toward the orbit target.
     // In our example it's a static target, but this could easily be customized.
-    let target = Vec3::ZERO;
-    camera.translation = target - camera.forward() * camera_settings.orbit_distance;
+    camera.translation = camera_settings.target - camera.forward() * camera_settings.orbit_distance;
 }
 
 fn zoom(
@@ -444,5 +450,20 @@ fn zoom(
     camera_settings.orbit_distance += scroll;
 
     // Update camera's translation
-    camera.translation = -camera.forward() * camera_settings.orbit_distance;
+    camera.translation = camera_settings.target - camera.forward() * camera_settings.orbit_distance;
+}
+
+fn pan(
+    mut camera: Single<&mut Transform, With<Camera>>,
+    mut camera_settings: ResMut<CameraSettings>,
+    mouse_motion: Res<AccumulatedMouseMotion>,
+) {
+    // Get delta
+    let delta = mouse_motion.delta * 0.01;
+
+    // Update the orbit distance in settings resource
+    camera_settings.target += camera.rotation * Vec3::new(-delta.x, delta.y, 0.0);
+
+    // Update camera's translation
+    camera.translation = camera_settings.target - camera.forward() * camera_settings.orbit_distance;
 }
