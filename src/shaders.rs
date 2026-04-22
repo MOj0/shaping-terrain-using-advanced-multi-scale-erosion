@@ -5,6 +5,7 @@ use bevy::{
         extract_resource::{ExtractResource, ExtractResourcePlugin},
         render_asset::RenderAssets,
         render_graph::{self, RenderGraph, RenderLabel},
+        render_resource::encase::internal::WriteInto,
         render_resource::{binding_types, *},
         renderer::{RenderContext, RenderDevice, RenderQueue},
         storage::{GpuShaderStorageBuffer, ShaderStorageBuffer},
@@ -33,7 +34,7 @@ impl Plugin for ShaderPlugin {
 }
 
 /// Path to the compute shader
-const COMPUTE_SHADER_PATH: &str = "shaders/terrain_compute.wgsl";
+const COMPUTE_SHADER_PATH: &str = "shaders/erosion.wgsl";
 
 /// Path to the render shader
 const RENDER_SHADER_PATH: &str = "shaders/terrain_render.wgsl";
@@ -50,15 +51,61 @@ const BUFFER_LEN: usize = TEXTURE_SIZE * TEXTURE_SIZE;
 #[derive(Resource, ExtractResource, Clone, Deref)]
 pub struct ImageHandle(pub Handle<Image>);
 
-// Holds handle to the SSBO
+// Holds handles to the SSBOs used by the compute shader
 #[derive(Resource, ExtractResource, Clone)]
-pub struct ShaderStorageBufferHandle(pub Handle<ShaderStorageBuffer>);
+pub struct ComputeSSBOHandles {
+    pub height_a: Handle<ShaderStorageBuffer>,
+    height_b: Handle<ShaderStorageBuffer>,
+    stream_a: Handle<ShaderStorageBuffer>,
+    stream_b: Handle<ShaderStorageBuffer>,
+    hardness: Handle<ShaderStorageBuffer>,
+}
 
 // This struct defines the data that will be passed to your shader
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 pub struct TerrainMaterial {
     #[storage(0)]
-    pub buffer_handle: Handle<ShaderStorageBuffer>,
+    pub height_buffer_handle: Handle<ShaderStorageBuffer>,
+}
+
+#[derive(Resource, Clone, ExtractResource, ShaderType, Reflect)]
+#[reflect(Resource)]
+pub struct ErosionUniforms {
+    pub nx: i32,
+    pub ny: i32,
+    // NOTE: Opposite corners of the grid
+    pub a: Vec2, // TODO: Rename to something like grid_corner1
+    pub b: Vec2, // TODO: Rename to something like grid_corner2
+
+    pub cell_size: Vec2,
+    pub flow_p: f32,
+    pub k: f32,
+    pub p_sa: f32,
+    pub p_sl: f32,
+    pub dt: f32,
+    pub max_spe: f32,
+
+    pub debug: f32,
+}
+
+impl Default for ErosionUniforms {
+    fn default() -> Self {
+        Self {
+            nx: TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
+            ny: TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
+            a: Vec2::ZERO, //NOTE: This should be overwritten by the actual corners of the grid
+            b: Vec2::ONE,  //NOTE: This should be overwritten by the actual corners of the grid
+            cell_size: Vec2::ONE, // NOTE: This should be overwritten by the actual size of the cell
+            flow_p: 1.3,
+            k: 0.0005,
+            p_sa: 0.8,
+            p_sl: 2.0,
+            dt: 1.0,
+            max_spe: 10000.0,
+
+            debug: 1.0,
+        }
+    }
 }
 
 //////////
@@ -67,9 +114,10 @@ pub struct TerrainMaterial {
 /// TODO: Possibly move to a separate file
 struct ComputeShaderPipelinePlugin;
 
-/// Resource containing the shader bind group
+/// Resource containing the shader bind groups
+/// We need 2 bind groups to do dual buffering
 #[derive(Resource)]
-struct GpuBufferBindGroup(BindGroup);
+struct ComputeBindGroups([BindGroup; 2]);
 
 /// Compute shader pipeline
 #[derive(Resource)]
@@ -82,15 +130,18 @@ struct ComputePipeline {
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
 struct ComputeNodeLabel;
 
+/// State used for dual buffering
+#[derive(Default)]
+enum ComputeState {
+    #[default]
+    BufferA,
+    BufferB,
+}
+
 /// The node that will execute the compute shader
 #[derive(Default)]
-struct ComputeNode {}
-
-#[derive(Resource, Clone, ExtractResource, ShaderType, Reflect)]
-#[reflect(Resource)]
-struct ErosionUniforms {
-    foo: u32,
-    cell_size: Vec2,
+struct ComputeNode {
+    state: ComputeState,
 }
 
 impl Material for TerrainMaterial {
@@ -109,19 +160,21 @@ fn shader_setup(
     mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
     asset_server: Res<AssetServer>,
 ) {
-    // Create a (storage) buffer with some dummy data
-    let buffer: Vec<u32> = (0..BUFFER_LEN as u32).collect();
-    let shader_storage_buffer = ShaderStorageBuffer::from(buffer);
-    let buffer_handle = buffers.add(shader_storage_buffer);
-    commands.insert_resource(ShaderStorageBufferHandle(buffer_handle.clone()));
+    // Prepare SSBOs for the compute shader
+    commands.insert_resource(ComputeSSBOHandles {
+        height_a: prepare_ssbo(&mut buffers, vec![0; BUFFER_LEN]),
+        height_b: prepare_ssbo(&mut buffers, vec![0; BUFFER_LEN]),
+        stream_a: prepare_ssbo(&mut buffers, vec![0; BUFFER_LEN]),
+        stream_b: prepare_ssbo(&mut buffers, vec![0; BUFFER_LEN]),
+        hardness: prepare_ssbo(&mut buffers, vec![0; BUFFER_LEN]),
+    });
 
+    // Load in the heightfield texture
     let texture_handle: Handle<Image> = asset_server.load("heightfields/mountains.png");
     commands.insert_resource(ImageHandle(texture_handle));
 
-    commands.insert_resource(ErosionUniforms {
-        foo: 0,
-        cell_size: Vec2::ONE,
-    });
+    // Insert the uniforms
+    commands.insert_resource(ErosionUniforms::default());
 }
 
 /// Waits until the texture asset is loaded and changes the app state
@@ -142,14 +195,17 @@ fn change_erosion_uniform_resource(
     mouse: Res<ButtonInput<MouseButton>>,
 ) {
     if mouse.just_pressed(MouseButton::Left) {
-        r_erosion_uniform.foo += 100;
+        r_erosion_uniform.debug += 1.0;
+    }
+    if mouse.just_pressed(MouseButton::Right) {
+        r_erosion_uniform.debug -= 1.0;
     }
 }
 
 impl Plugin for ComputeShaderPipelinePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
-            ExtractResourcePlugin::<ShaderStorageBufferHandle>::default(),
+            ExtractResourcePlugin::<ComputeSSBOHandles>::default(),
             ExtractResourcePlugin::<ErosionUniforms>::default(),
             ExtractResourcePlugin::<ImageHandle>::default(),
         ));
@@ -159,22 +215,21 @@ impl Plugin for ComputeShaderPipelinePlugin {
         };
 
         render_app
-            .add_systems(
-                RenderStartup,
-                (
-                    Self::init_compute_pipeline,
-                    Self::add_compute_render_graph_node,
-                ),
-            )
+            .add_systems(RenderStartup, Self::init_compute_pipeline)
             .add_systems(
                 // NOTE: This is done **every** render frame, in the PrepareBindGroups stage
                 Render,
                 Self::prepare_bind_group.in_set(RenderSystems::PrepareBindGroups),
             );
+
+        let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
+        render_graph.add_node(ComputeNodeLabel, ComputeNode::default());
+        render_graph.add_node_edge(ComputeNodeLabel, bevy::render::graph::CameraDriverLabel);
     }
 }
 
 impl ComputeShaderPipelinePlugin {
+    /// Defines the compute layout and prepares the compute pipeline
     fn init_compute_pipeline(
         mut commands: Commands,
         asset_server: Res<AssetServer>,
@@ -186,7 +241,11 @@ impl ComputeShaderPipelinePlugin {
             &BindGroupLayoutEntries::sequential(
                 ShaderStages::COMPUTE,
                 (
-                    binding_types::storage_buffer::<Vec<u32>>(false),
+                    binding_types::storage_buffer::<Vec<f32>>(false),
+                    binding_types::storage_buffer::<Vec<f32>>(false),
+                    binding_types::storage_buffer::<Vec<f32>>(false),
+                    binding_types::storage_buffer::<Vec<f32>>(false),
+                    binding_types::storage_buffer::<Vec<f32>>(false),
                     binding_types::uniform_buffer::<ErosionUniforms>(false),
                 ),
             ),
@@ -210,50 +269,72 @@ impl ComputeShaderPipelinePlugin {
         });
     }
 
-    fn add_compute_render_graph_node(mut render_graph: ResMut<RenderGraph>) {
-        // Add the compute node as a top-level node to the render graph.
-        // This means it will only get executed once per frame.
-        render_graph.add_node(ComputeNodeLabel, ComputeNode::default());
-    }
-
+    /// Creates the bind group according to the layout and loads in the uniform data
     fn prepare_bind_group(
         mut commands: Commands,
         r_pipeline: Res<ComputePipeline>,
         r_render_device: Res<RenderDevice>,
         r_pipeline_cache: Res<PipelineCache>,
-        r_custom_material_handle: Res<ShaderStorageBufferHandle>,
+        ssbo_handles: Res<ComputeSSBOHandles>,
         r_gpu_buffers: Res<RenderAssets<GpuShaderStorageBuffer>>, // NOTE: GpuShaderStorageBuffer implements the RenderAsset trait
         r_queue: Res<RenderQueue>,
         r_erosion_uniform_buffer: Res<ErosionUniforms>,
     ) {
-        // Get the SSBO with the ShaderStorageBufferHandle
-        let buffer = r_gpu_buffers.get(&r_custom_material_handle.0).unwrap();
+        // Get handles to the SSBOs from the ComputeSSBOHandles
+        let height_a_buffer = r_gpu_buffers.get(&ssbo_handles.height_a).unwrap();
+        let height_b_buffer = r_gpu_buffers.get(&ssbo_handles.height_b).unwrap();
+        let stream_a_buffer = r_gpu_buffers.get(&ssbo_handles.stream_a).unwrap();
+        let stream_b_buffer = r_gpu_buffers.get(&ssbo_handles.stream_b).unwrap();
+        let hardness_buffer = r_gpu_buffers.get(&ssbo_handles.hardness).unwrap();
 
         let mut uniform_buffer = UniformBuffer::from(r_erosion_uniform_buffer.into_inner());
         uniform_buffer.write_buffer(&r_render_device, &r_queue);
 
-        let bind_group = r_render_device.create_bind_group(
+        let bind_group0 = r_render_device.create_bind_group(
             None,
             &r_pipeline_cache.get_bind_group_layout(&r_pipeline.layout),
             &BindGroupEntries::sequential((
-                buffer.buffer.as_entire_buffer_binding(),
+                height_a_buffer.buffer.as_entire_buffer_binding(),
+                height_b_buffer.buffer.as_entire_buffer_binding(),
+                stream_a_buffer.buffer.as_entire_buffer_binding(),
+                stream_b_buffer.buffer.as_entire_buffer_binding(),
+                hardness_buffer.buffer.as_entire_buffer_binding(),
+                &uniform_buffer,
+            )),
+        );
+        let bind_group1 = r_render_device.create_bind_group(
+            None,
+            &r_pipeline_cache.get_bind_group_layout(&r_pipeline.layout),
+            &BindGroupEntries::sequential((
+                height_b_buffer.buffer.as_entire_buffer_binding(),
+                height_a_buffer.buffer.as_entire_buffer_binding(),
+                stream_b_buffer.buffer.as_entire_buffer_binding(),
+                stream_a_buffer.buffer.as_entire_buffer_binding(),
+                hardness_buffer.buffer.as_entire_buffer_binding(),
                 &uniform_buffer,
             )),
         );
 
         // We will use this when writing the render code in the Render Graph's Node
-        commands.insert_resource(GpuBufferBindGroup(bind_group));
+        commands.insert_resource(ComputeBindGroups([bind_group0, bind_group1]));
     }
 }
 
 impl render_graph::Node for ComputeNode {
+    fn update(&mut self, _world: &mut World) {
+        self.state = match self.state {
+            ComputeState::BufferA => ComputeState::BufferB,
+            ComputeState::BufferB => ComputeState::BufferA,
+        }
+    }
+
     fn run<'w>(
         &self,
         _graph: &mut render_graph::RenderGraphContext,
         render_context: &mut RenderContext<'w>,
         world: &'w World,
     ) -> Result<(), render_graph::NodeRunError> {
-        let bind_group = world.resource::<GpuBufferBindGroup>();
+        let bind_groups = world.resource::<ComputeBindGroups>();
         let pipeline_cache = world.resource::<PipelineCache>();
         let pipeline = world.resource::<ComputePipeline>();
 
@@ -268,11 +349,28 @@ impl render_graph::Node for ComputeNode {
 
             let dispatch_size = (TEXTURE_SIZE / 8) as u32;
 
-            pass.set_bind_group(0, &bind_group.0, &[]);
+            let bind_group_index = match self.state {
+                ComputeState::BufferA => 0,
+                ComputeState::BufferB => 1,
+            };
+
+            pass.set_bind_group(0, &bind_groups.0[bind_group_index], &[]);
             pass.set_pipeline(compute_pipeline);
             pass.dispatch_workgroups(dispatch_size, dispatch_size, 1);
         }
 
         Ok(())
     }
+}
+
+pub fn prepare_ssbo<T: ShaderType + ShaderSize + WriteInto>(
+    buffers: &mut ResMut<Assets<ShaderStorageBuffer>>,
+    data: Vec<T>,
+) -> Handle<ShaderStorageBuffer> {
+    let mut buffer = ShaderStorageBuffer::from(data);
+
+    // Used to be able to copy this back to RAM, for debugging purposes
+    buffer.buffer_description.usage |= BufferUsages::COPY_SRC;
+
+    buffers.add(buffer)
 }

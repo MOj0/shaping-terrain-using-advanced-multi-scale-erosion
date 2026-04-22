@@ -9,7 +9,10 @@ mod terrain;
 fn main() {
     App::new()
         .add_plugins((
-            DefaultPlugins,
+            DefaultPlugins.set(bevy::log::LogPlugin {
+                level: bevy::log::Level::INFO,
+                ..default()
+            }),
             bevy_egui::EguiPlugin::default(),
             WorldInspectorPlugin::default().run_if(
                 bevy::input::common_conditions::input_toggle_active(true, KeyCode::Tab),

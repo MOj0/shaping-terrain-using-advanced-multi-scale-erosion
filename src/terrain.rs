@@ -2,7 +2,9 @@ use bevy::{
     asset::RenderAssetUsages,
     mesh::{Indices, Mesh},
     prelude::*,
+    render::gpu_readback::{Readback, ReadbackComplete},
     render::render_resource::*,
+    render::storage::ShaderStorageBuffer,
 };
 
 use crate::shaders;
@@ -24,8 +26,9 @@ fn init_terrain(
     image_handle: Res<shaders::ImageHandle>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<shaders::TerrainMaterial>>,
-    r_buffer_handle: Res<shaders::ShaderStorageBufferHandle>,
+    mut r_buffer_handles: ResMut<shaders::ComputeSSBOHandles>,
     mut s_next_app_state: ResMut<NextState<crate::AppState>>,
+    mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
 ) {
     let Some(image) = images.get_mut(&image_handle.0) else {
         error!("image not yet loaded...");
@@ -46,21 +49,29 @@ fn init_terrain(
     };
 
     let image_size = image.width() as usize;
-    let (positions, indices) = generate_terrain(heights, image_size, 0.7, 50.0);
-    let cell_size = compute_cell_size(&positions, image_size);
+    let (positions, indices) = generate_terrain(heights.clone(), image_size, 0.7, 50.0);
 
-    let buffer_handle = &r_buffer_handle.0;
+    // NOTE: Overwrite the existing dummy handle with one pointing to the actual data
+    r_buffer_handles.height_a = shaders::prepare_ssbo(&mut buffers, heights.clone());
+
+    // Print data from the CPU for debugging
+    commands
+        .spawn(Readback::buffer(r_buffer_handles.height_a.clone()))
+        .observe(|event: On<ReadbackComplete>| {
+            let data: Vec<f32> = event.to_shader_type();
+            info!("heights[0..100] {:?}", &data[0..100]);
+        });
 
     // Create the custom material and add it to the materials assets
     let terrain_material_handle = materials.add(shaders::TerrainMaterial {
-        buffer_handle: buffer_handle.clone(),
+        height_buffer_handle: r_buffer_handles.height_a.clone(),
     });
 
     let mut terrain_mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::default(),
     );
-    terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions.clone());
     terrain_mesh.insert_indices(Indices::U32(indices));
     terrain_mesh.compute_normals();
 
@@ -72,12 +83,20 @@ fn init_terrain(
         Transform::from_translation(Vec3::new(-4.0, -1.0, 0.0)),
     ));
 
-    // TODO: Figure out updaing the uniform in the compute shader (for some reason it doesn't update it)
-    // // Insert the uniform resource
-    // commands.insert_resource(ErosionUniforms {
-    //     foo: 500,
-    //     cell_size,
-    // });
+    // Overwrite the dummy default values for the uniforms
+    // TODO: Make this nicer...
+    let a = &positions[0];
+    let b = &positions[image_size * image_size - 1];
+    // NOTE: We take the `x` and `z` coordinate here, since that is what forms the surface of the grid, `y` is up
+    let a = Vec2::new(a[0], a[2]);
+    let b = Vec2::new(b[0], b[2]);
+    let cell_size = compute_cell_size(&positions, image_size);
+    commands.insert_resource(shaders::ErosionUniforms {
+        cell_size,
+        a,
+        b,
+        ..default()
+    });
 
     s_next_app_state.set(crate::AppState::Running);
 }
