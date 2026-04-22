@@ -18,9 +18,6 @@ impl Plugin for ShaderPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             ComputeShaderPipelinePlugin,
-            ExtractResourcePlugin::<ShaderStorageBufferHandle>::default(),
-            ExtractResourcePlugin::<ErosionUniforms>::default(),
-            ExtractResourcePlugin::<ImageHandle>::default(),
             MaterialPlugin::<TerrainMaterial>::default(),
         ))
         .add_systems(Startup, shader_setup)
@@ -78,7 +75,7 @@ struct GpuBufferBindGroup(BindGroup);
 #[derive(Resource)]
 struct ComputePipeline {
     layout: BindGroupLayoutDescriptor,
-    pipeline: CachedComputePipelineId,
+    pipeline_id: CachedComputePipelineId,
 }
 
 /// Label to identify the node in the render graph
@@ -121,9 +118,8 @@ fn shader_setup(
     let texture_handle: Handle<Image> = asset_server.load("heightfields/mountains.png");
     commands.insert_resource(ImageHandle(texture_handle));
 
-    // TODO: This is hack to insert a dummy, temporary resource so that `prepare_bind_group` works
     commands.insert_resource(ErosionUniforms {
-        foo: 5,
+        foo: 0,
         cell_size: Vec2::ONE,
     });
 }
@@ -152,6 +148,12 @@ fn change_erosion_uniform_resource(
 
 impl Plugin for ComputeShaderPipelinePlugin {
     fn build(&self, app: &mut App) {
+        app.add_plugins((
+            ExtractResourcePlugin::<ShaderStorageBufferHandle>::default(),
+            ExtractResourcePlugin::<ErosionUniforms>::default(),
+            ExtractResourcePlugin::<ImageHandle>::default(),
+        ));
+
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
@@ -165,10 +167,9 @@ impl Plugin for ComputeShaderPipelinePlugin {
                 ),
             )
             .add_systems(
+                // NOTE: This is done **every** render frame, in the PrepareBindGroups stage
                 Render,
-                Self::prepare_bind_group
-                    .in_set(RenderSystems::PrepareBindGroups)
-                    .run_if(not(resource_exists::<GpuBufferBindGroup>)),
+                Self::prepare_bind_group.in_set(RenderSystems::PrepareBindGroups),
             );
     }
 }
@@ -203,7 +204,10 @@ impl ComputeShaderPipelinePlugin {
         });
 
         // We will use this when writing the render code in the Render Graph's Node
-        commands.insert_resource(ComputePipeline { layout, pipeline });
+        commands.insert_resource(ComputePipeline {
+            layout,
+            pipeline_id: pipeline,
+        });
     }
 
     fn add_compute_render_graph_node(mut render_graph: ResMut<RenderGraph>) {
@@ -225,7 +229,6 @@ impl ComputeShaderPipelinePlugin {
         // Get the SSBO with the ShaderStorageBufferHandle
         let buffer = r_gpu_buffers.get(&r_custom_material_handle.0).unwrap();
 
-        // TODO: Move this write to an earlier step?
         let mut uniform_buffer = UniformBuffer::from(r_erosion_uniform_buffer.into_inner());
         uniform_buffer.write_buffer(&r_render_device, &r_queue);
 
@@ -250,11 +253,11 @@ impl render_graph::Node for ComputeNode {
         render_context: &mut RenderContext<'w>,
         world: &'w World,
     ) -> Result<(), render_graph::NodeRunError> {
+        let bind_group = world.resource::<GpuBufferBindGroup>();
         let pipeline_cache = world.resource::<PipelineCache>();
         let pipeline = world.resource::<ComputePipeline>();
-        let bind_group = world.resource::<GpuBufferBindGroup>();
 
-        if let Some(init_pipeline) = pipeline_cache.get_compute_pipeline(pipeline.pipeline) {
+        if let Some(compute_pipeline) = pipeline_cache.get_compute_pipeline(pipeline.pipeline_id) {
             let mut pass =
                 render_context
                     .command_encoder()
@@ -266,7 +269,7 @@ impl render_graph::Node for ComputeNode {
             let dispatch_size = (TEXTURE_SIZE / 8) as u32;
 
             pass.set_bind_group(0, &bind_group.0, &[]);
-            pass.set_pipeline(init_pipeline);
+            pass.set_pipeline(compute_pipeline);
             pass.dispatch_workgroups(dispatch_size, dispatch_size, 1);
         }
 
