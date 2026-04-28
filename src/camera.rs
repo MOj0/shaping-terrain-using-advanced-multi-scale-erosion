@@ -37,7 +37,7 @@ impl Default for CameraSettings {
             orbit_distance: 80.0,
             pitch_speed: 0.003,
             yaw_speed: 0.004,
-            target: Vec3::new(46.0, 27.0, 135.0),
+            target: Vec3::new(2000.0, 4400.0, 18000.0),
         }
     }
 }
@@ -73,7 +73,7 @@ fn pan(
     mouse_motion: Res<AccumulatedMouseMotion>,
 ) {
     // Get delta
-    let delta = mouse_motion.delta * 0.01;
+    let delta = mouse_motion.delta * 50.0;
 
     // Update the orbit distance in settings resource
     camera_settings.target += camera.rotation * Vec3::new(-delta.x, delta.y, 0.0);
@@ -88,7 +88,7 @@ fn zoom(
     mouse_scroll: Res<AccumulatedMouseScroll>,
 ) {
     // Get scroll delta, also invert
-    let scroll = -mouse_scroll.delta.y * 5.0;
+    let scroll = -mouse_scroll.delta.y * 200.0;
 
     // Update the orbit distance in settings resource
     camera_settings.orbit_distance += scroll;

@@ -55,9 +55,9 @@ pub struct ImageHandle(pub Handle<Image>);
 #[derive(Resource, ExtractResource, Clone)]
 pub struct ComputeSSBOHandles {
     pub height_a: Handle<ShaderStorageBuffer>,
-    height_b: Handle<ShaderStorageBuffer>,
-    stream_a: Handle<ShaderStorageBuffer>,
-    stream_b: Handle<ShaderStorageBuffer>,
+    pub height_b: Handle<ShaderStorageBuffer>,
+    pub stream_a: Handle<ShaderStorageBuffer>,
+    pub stream_b: Handle<ShaderStorageBuffer>,
     hardness: Handle<ShaderStorageBuffer>,
 }
 
@@ -76,8 +76,8 @@ pub struct ErosionUniforms {
     // NOTE: Opposite corners of the grid
     pub a: Vec2, // TODO: Rename to something like grid_corner1
     pub b: Vec2, // TODO: Rename to something like grid_corner2
-
     pub cell_size: Vec2,
+
     pub flow_p: f32,
     pub k: f32,
     pub p_sa: f32,
@@ -93,9 +93,9 @@ impl Default for ErosionUniforms {
         Self {
             nx: TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
             ny: TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
-            a: Vec2::ZERO, //NOTE: This should be overwritten by the actual corners of the grid
-            b: Vec2::ONE,  //NOTE: This should be overwritten by the actual corners of the grid
-            cell_size: Vec2::ONE, // NOTE: This should be overwritten by the actual size of the cell
+            a: Vec2::ZERO, //NOTE: This will be overwritten by the actual corners of the grid
+            b: Vec2::ONE,  //NOTE: This will be overwritten by the actual corners of the grid
+            cell_size: Vec2::ZERO, // NOTE: This will be overwritten by the actual size of the cell
             flow_p: 1.3,
             k: 0.0005,
             p_sa: 0.8,
@@ -132,16 +132,16 @@ struct ComputeNodeLabel;
 
 /// State used for dual buffering
 #[derive(Default)]
-enum ComputeState {
+enum DualBufferingState {
     #[default]
-    BufferA,
-    BufferB,
+    BindGroupA,
+    BindGroupB,
 }
 
 /// The node that will execute the compute shader
 #[derive(Default)]
 struct ComputeNode {
-    state: ComputeState,
+    dual_buffering_state: DualBufferingState,
 }
 
 impl Material for TerrainMaterial {
@@ -185,6 +185,7 @@ fn image_loaded_observer(
 ) {
     if images.get_mut(&image_handle.0).is_some() {
         s_next_app_state.set(crate::AppState::GeneratingTerrain);
+        info!("Texture loaded!");
     } else {
         info!("image not yet loaded...");
     }
@@ -322,10 +323,10 @@ impl ComputeShaderPipelinePlugin {
 
 impl render_graph::Node for ComputeNode {
     fn update(&mut self, _world: &mut World) {
-        self.state = match self.state {
-            ComputeState::BufferA => ComputeState::BufferB,
-            ComputeState::BufferB => ComputeState::BufferA,
-        }
+        self.dual_buffering_state = match self.dual_buffering_state {
+            DualBufferingState::BindGroupA => DualBufferingState::BindGroupB,
+            DualBufferingState::BindGroupB => DualBufferingState::BindGroupA,
+        };
     }
 
     fn run<'w>(
@@ -349,9 +350,9 @@ impl render_graph::Node for ComputeNode {
 
             let dispatch_size = (TEXTURE_SIZE / 8) as u32;
 
-            let bind_group_index = match self.state {
-                ComputeState::BufferA => 0,
-                ComputeState::BufferB => 1,
+            let bind_group_index = match self.dual_buffering_state {
+                DualBufferingState::BindGroupA => 0,
+                DualBufferingState::BindGroupB => 1,
             };
 
             pass.set_bind_group(0, &bind_groups.0[bind_group_index], &[]);

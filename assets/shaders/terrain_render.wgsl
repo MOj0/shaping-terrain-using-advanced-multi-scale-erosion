@@ -25,10 +25,10 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     // Read data from SSBO
     let height = heights[vertex.vertex_index];
     
-    let local_position = vertex.position + vertex.normal * height;
+    // let local_position = vertex.position + vertex.normal * height;
     // let local_position = vertex.position + vertex.normal * -0.6;
     // let local_position = vertex.position + vec3<f32>(height, 0.0, 0.0);
-    // let local_position = vertex.position;
+    let local_position = vertex.position + vec3<f32>(0.0, height, 0.0);
 
     var world_from_local = mesh_functions::get_world_from_local(vertex.instance_index);
     out.world_position = mesh_functions::mesh_position_local_to_world(world_from_local, vec4(local_position, 1.0));

@@ -5,7 +5,11 @@ edition = "2024"
 
 
 [dependencies]
-bevy = { version = "0.18.1", features = ["dynamic_linking", "file_watcher"] }
+bevy = { version = "0.18.1", features = [
+    "dynamic_linking",
+    "file_watcher",
+    "bevy_dev_tools",
+] }
 bevy-inspector-egui = "0.36.0"
 bytemuck = "1.25.0"
 inquire = "0.9.4"

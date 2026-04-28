@@ -1,4 +1,6 @@
+use bevy::dev_tools::fps_overlay::{FpsOverlayConfig, FpsOverlayPlugin, FrameTimeGraphConfig};
 use bevy::prelude::*;
+use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy_inspector_egui::bevy_egui;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 
@@ -13,9 +15,18 @@ fn main() {
                 level: bevy::log::Level::INFO,
                 ..default()
             }),
+            FpsOverlayPlugin {
+                config: FpsOverlayConfig {
+                    frame_time_graph_config: FrameTimeGraphConfig {
+                        enabled: false,
+                        ..default()
+                    },
+                    ..default()
+                },
+            },
             bevy_egui::EguiPlugin::default(),
             WorldInspectorPlugin::default().run_if(
-                bevy::input::common_conditions::input_toggle_active(true, KeyCode::Tab),
+                bevy::input::common_conditions::input_toggle_active(false, KeyCode::Tab),
             ),
             shaders::ShaderPlugin,
             terrain::TerrainPlugin,
@@ -23,7 +34,7 @@ fn main() {
         ))
         .init_state::<AppState>()
         .insert_resource(ClearColor(Color::srgb_u8(102, 178, 212)))
-        .add_systems(Startup, setup)
+        .add_systems(Startup, (setup, set_window_maximized))
         .run();
 }
 
@@ -51,4 +62,10 @@ fn setup(mut commands: Commands) {
         },
         Transform::from_xyz(0.0, 4.0, 0.0),
     ));
+}
+
+fn set_window_maximized(mut q_windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>) {
+    for mut window in q_windows.iter_mut() {
+        window.set_maximized(true);
+    }
 }
