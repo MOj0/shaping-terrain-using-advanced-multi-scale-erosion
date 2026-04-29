@@ -1,11 +1,14 @@
 use bevy::{
     asset::RenderAssetUsages,
+    input::common_conditions,
     mesh::{Indices, Mesh},
     prelude::*,
     render::gpu_readback::{Readback, ReadbackComplete},
     render::render_resource::*,
     render::storage::ShaderStorageBuffer,
 };
+use std::fs::File;
+use std::io::{BufWriter, Write};
 
 use crate::shaders;
 
@@ -13,11 +16,24 @@ pub struct TerrainPlugin;
 
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            init_terrain.run_if(in_state(crate::AppState::GeneratingTerrain)),
-        );
+        app.init_resource::<FileRes>()
+            .add_systems(
+                Update,
+                init_terrain.run_if(in_state(crate::AppState::GeneratingTerrain)),
+            )
+            .add_systems(
+                Update,
+                print_file_res_and_write_to_file
+                    .run_if(common_conditions::input_just_pressed(KeyCode::KeyA)),
+            );
     }
+}
+
+#[derive(Resource, Default, Reflect, Debug)]
+#[reflect(Resource)]
+struct FileRes {
+    written: bool,
+    data: Vec<f32>,
 }
 
 fn init_terrain(
@@ -38,7 +54,8 @@ fn init_terrain(
     assert_eq!(image.width(), image.height());
 
     // TODO: Parameterize this somehow
-    let height_scale = 3000.0;
+    let height_scale = 3000.0; // Source: from the original size in C++ implementation
+    let width_scale = 20000.0 / 255.0; // Source: from the original size in C++ implementation: celldiagonal = Vector2((b[0] - a[0]) / (nx - 1), (b[1] - a[1]) / (ny - 1));
 
     // Collect the values of the texture into a vector.
     // Range of heights is [0..1]
@@ -51,7 +68,6 @@ fn init_terrain(
         None => panic!("whoops, no data"),
     };
 
-    let width_scale = 78.0;
     let image_size = image.width() as usize;
     let (positions, indices) = generate_terrain(heights.clone(), image_size, width_scale);
 
@@ -59,12 +75,12 @@ fn init_terrain(
     r_buffer_handles.height_a = shaders::prepare_ssbo(&mut buffers, heights.clone());
 
     // Print data from the CPU for debugging
-    commands
-        .spawn(Readback::buffer(r_buffer_handles.height_a.clone()))
-        .observe(|event: On<ReadbackComplete>| {
-            let heights_a: Vec<f32> = event.to_shader_type();
-            info!("A: Terrain [0..10] {:?}", &heights_a[0..10]);
-        });
+    // commands
+    //     .spawn(Readback::buffer(r_buffer_handles.height_a.clone()))
+    //     .observe(|event: On<ReadbackComplete>| {
+    //         let heights_a: Vec<f32> = event.to_shader_type();
+    //         info!("A: Terrain [0..10] {:?}", &heights_a[0..10]);
+    //     });
 
     // commands
     //     .spawn(Readback::buffer(r_buffer_handles.height_b.clone()))
@@ -74,13 +90,13 @@ fn init_terrain(
     //     });
 
     // TODO: stream_a is also the output buffer half the time
-    // commands
-    //     .spawn(Readback::buffer(r_buffer_handles.stream_a.clone()))
-    //     .observe(print_stream_buffer);
+    commands
+        .spawn(Readback::buffer(r_buffer_handles.stream_a.clone()))
+        .observe(print_output_stream_buffer::<'A'>);
 
     commands
         .spawn(Readback::buffer(r_buffer_handles.stream_b.clone()))
-        .observe(print_output_stream_buffer);
+        .observe(print_output_stream_buffer::<'B'>);
 
     // Create the custom material and add it to the materials assets
     let terrain_material_handle = materials.add(shaders::TerrainMaterial {
@@ -179,7 +195,10 @@ fn compute_cell_size(terrain: &Vec<[f32; 3]>, grid_length: usize) -> Vec2 {
 
 /// Prints the stream buffer read from the GPU
 /// TODO: The output (e.g. out_stream) buffer changes each frame, so we should make some logic to only print the actual output buffer
-fn print_output_stream_buffer(event: On<ReadbackComplete>) {
+fn print_output_stream_buffer<const BUFFER_IDENT: char>(
+    event: On<ReadbackComplete>,
+    mut r_file: ResMut<FileRes>,
+) {
     let stream_data: Vec<f32> = event.to_shader_type();
     let min = stream_data
         .iter()
@@ -190,5 +209,34 @@ fn print_output_stream_buffer(event: On<ReadbackComplete>) {
         .max_by(|a, b| a.partial_cmp(b).unwrap())
         .unwrap_or(&-1.0);
 
-    info!("Stream {:?}, min {}, max {}", &stream_data[0..10], min, max);
+    r_file.data = stream_data.clone();
+
+    info!(
+        "{}: Stream {:?}, min {}, max {}",
+        BUFFER_IDENT,
+        &stream_data[0..10],
+        min,
+        max
+    );
+
+    if BUFFER_IDENT == 'B' {
+        info!("==================\n");
+    }
+}
+
+fn write_vec_to_file(filename: &str, data: Vec<f32>) -> Result {
+    let file = File::create(filename)?;
+    let mut writer = BufWriter::new(file);
+
+    for value in data {
+        writeln!(writer, "{}", value)?;
+    }
+
+    Ok(())
+}
+
+fn print_file_res_and_write_to_file(r: Res<FileRes>) {
+    info!("{:?}", r);
+
+    write_vec_to_file("stream_data_b.txt", r.data.clone());
 }

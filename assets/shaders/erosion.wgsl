@@ -141,33 +141,36 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     var stream = length(params.cell_size);
     stream += computeIncomingFlowWeighted(p);
 
-    // // Steepest slope
-    // let d = getFlowSteepest(p);
-    // let receiver_height = in_terrain[toIndex1D_v(p + d)];
-    // let steepest_slope = abs(slope(p + d, p));
+    // Steepest slope
+    let d = getFlowSteepest(p);
+    let receiver_height = in_terrain[toIndex1D_v(p + d)];
+    let steepest_slope = abs(slope(p + d, p));
 
-    // // Stream power
-    // var spe = pow(stream, params.p_sa) *
-    //           clamp(pow(steepest_slope, params.p_sl), 0.0, 1.0);
+    // Stream power
+    var spe = pow(stream, params.p_sa) *
+              clamp(pow(steepest_slope, params.p_sl), 0.0, 1.0);
 
-    // spe = clamp(spe, 0.0, params.max_spe);
-    // spe *= params.k;
+    spe = clamp(spe, 0.0, params.max_spe);
+    spe *= params.k;
 
-    // // Height update
-    // let old_height = in_terrain[id];
-    // var new_height = old_height - params.dt * spe;
-    // new_height = max(new_height, receiver_height);
+    // Height update
+    let old_height = in_terrain[id];
+    var new_height = old_height - params.dt * spe;
+    new_height = max(new_height, receiver_height);
 
-    // out_terrain[id] = new_height;
-    // out_stream[id] = stream;
+    out_terrain[id] = new_height;
+    out_stream[id] = stream;
 
     /// DEBUG
     // out_stream[id] = stream;
+    // out_stream[id] = steepest_slope;
+    // out_stream[id] = receiver_height;
+    // out_stream[id] = f32(d[1]);
+    // out_stream[id] = stream;
     // out_stream[id] += 1.0;
-    out_stream[id] = in_stream[id] + 1.0;
+    // out_stream[id] = in_stream[id] + 1.0;
 
     // out_terrain[id] = params.debug;
     // out_terrain[id] = in_terrain[id] - 0.1;
     // out_terrain[id] = in_terrain[id] + 1.0;
-    /// DEBUG
 }

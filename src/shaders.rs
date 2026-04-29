@@ -322,6 +322,7 @@ impl ComputeShaderPipelinePlugin {
 }
 
 impl render_graph::Node for ComputeNode {
+    // TODO: We should only do this if the app is in the Running state. Need to derive ExtractResource to crate::AppState
     fn update(&mut self, _world: &mut World) {
         self.dual_buffering_state = match self.dual_buffering_state {
             DualBufferingState::BindGroupA => DualBufferingState::BindGroupB,
