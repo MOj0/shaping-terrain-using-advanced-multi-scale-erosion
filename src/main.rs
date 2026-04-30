@@ -3,6 +3,7 @@ use bevy::dev_tools::fps_overlay::{FpsOverlayConfig, FpsOverlayPlugin, FrameTime
 use bevy::input::common_conditions;
 use bevy::pbr::wireframe::{WireframeConfig, WireframePlugin};
 use bevy::prelude::*;
+use bevy::render::extract_resource::ExtractResource;
 use bevy_inspector_egui::bevy_egui;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 
@@ -46,6 +47,12 @@ fn main() {
             Update,
             toggle_wireframe.run_if(common_conditions::input_just_pressed(KeyCode::KeyW)),
         )
+        .add_systems(
+            Update,
+            update_wireframe_config.run_if(
+                bevy::ecs::schedule::common_conditions::resource_exists_and_changed::<DebugConfig>,
+            ),
+        )
         .run();
 }
 
@@ -58,7 +65,7 @@ pub enum AppState {
     Running,
 }
 
-#[derive(Resource, Reflect, PartialEq)]
+#[derive(Resource, Reflect, PartialEq, Debug)]
 #[reflect(Resource)]
 pub struct DebugConfig {
     is_wireframe_on: bool,
@@ -95,11 +102,13 @@ fn set_window_maximized(mut q_windows: Query<&mut Window, With<bevy::window::Pri
     }
 }
 
-fn toggle_wireframe(
-    mut r_debug_config: ResMut<DebugConfig>,
+fn toggle_wireframe(mut r_terrain_config: ResMut<DebugConfig>) {
+    r_terrain_config.is_wireframe_on = !r_terrain_config.is_wireframe_on;
+}
+
+fn update_wireframe_config(
+    r_terrain_config: ResMut<DebugConfig>,
     mut r_wireframe_config: ResMut<WireframeConfig>,
 ) {
-    r_debug_config.is_wireframe_on = !r_debug_config.is_wireframe_on;
-
-    r_wireframe_config.global = r_debug_config.is_wireframe_on;
+    r_wireframe_config.global = r_terrain_config.is_wireframe_on;
 }

@@ -4,6 +4,7 @@ use bevy::{
     mesh::VertexAttributeValues,
     mesh::{Indices, Mesh},
     prelude::*,
+    render::extract_resource::ExtractResource,
     render::gpu_readback::{Readback, ReadbackComplete},
     render::render_resource::*,
     render::storage::ShaderStorageBuffer,
@@ -18,6 +19,7 @@ pub struct TerrainPlugin;
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GPUData>()
+            .init_resource::<TerrainConfig>()
             .add_systems(
                 Update,
                 init_terrain.run_if(in_state(crate::AppState::GeneratingTerrain)),
@@ -33,11 +35,28 @@ impl Plugin for TerrainPlugin {
                         0.35,
                     ))
                     .and(resource_exists_and_equals(crate::DebugConfig {
+                        // NOTE: If we add more fields and change their default value, this will not work...
                         is_wireframe_on: true,
                         ..default()
                     })),
                 ),
             );
+    }
+}
+
+#[derive(Resource, Reflect, PartialEq, Clone, Debug, ExtractResource)]
+#[reflect(Resource)]
+pub struct TerrainConfig {
+    pub run_erosion: bool,
+    pub run_deposition: bool,
+}
+
+impl Default for TerrainConfig {
+    fn default() -> Self {
+        Self {
+            run_erosion: false,
+            run_deposition: false,
+        }
     }
 }
 
