@@ -158,6 +158,12 @@ fn init_terrain(
         b,
         ..default()
     });
+    commands.insert_resource(shaders::DepositionUniforms {
+        cell_size,
+        a,
+        b,
+        ..default()
+    });
 
     info!(?cell_size, ?a, ?b, "updated params");
 
