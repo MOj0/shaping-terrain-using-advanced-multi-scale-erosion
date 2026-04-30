@@ -133,20 +133,9 @@ struct ComputePipeline {
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
 struct ComputeNodeLabel;
 
-/// State used for dual buffering
-#[derive(Default)]
-enum DualBufferingState {
-    #[default]
-    BindGroupA,
-    BindGroupB,
-}
-
 /// The node that will execute the compute shader
 #[derive(Default)]
-struct ComputeNode {
-    // NOTE: If this turns out to not be useful, delete the DualBufferingState struct as well
-    // dual_buffering_state: DualBufferingState,
-}
+struct ComputeNode;
 
 impl Material for TerrainMaterial {
     fn vertex_shader() -> ShaderRef {
@@ -327,45 +316,12 @@ impl ComputeShaderPipelinePlugin {
 }
 
 impl render_graph::Node for ComputeNode {
-    // // TODO: We should only do this if the app is in the Running state. Need to derive ExtractResource to crate::AppState or something.
-    // //      This `world` is of the RenderApp
-    // fn update(&mut self, world: &mut World) {
-    //     let time = world.resource::<Time>();
-    //     if time.elapsed_secs() < 3.0 {
-    //         return;
-    //     }
-    //     // let Some(app_state) = world.get_resource::<State<crate::AppState>>() else {
-    //     //     return;
-    //     // };
-    //     // if *app_state.get() != crate::AppState::Running {
-    //     //     return;
-    //     // }
-
-    //     // self.dual_buffering_state = match self.dual_buffering_state {
-    //     //     DualBufferingState::BindGroupA => DualBufferingState::BindGroupB,
-    //     //     DualBufferingState::BindGroupB => DualBufferingState::BindGroupA,
-    //     // };
-    // }
-
     fn run<'w>(
         &self,
         _graph: &mut render_graph::RenderGraphContext,
         render_context: &mut RenderContext<'w>,
         world: &'w World,
     ) -> Result<(), render_graph::NodeRunError> {
-        // let time = world.resource::<Time>();
-        // if time.elapsed_secs() < 3.0 {
-        //     return Ok(());
-        // }
-
-        // TODO: This `world` is of the RenderApp
-        // let Some(app_state) = world.get_resource::<State<crate::AppState>>() else {
-        //     return Ok(());
-        // };
-        // if *app_state.get() != crate::AppState::Running {
-        //     return Ok(());
-        // }
-
         let bind_groups = world.resource::<ComputeBindGroups>();
         let pipeline_cache = world.resource::<PipelineCache>();
         let pipeline = world.resource::<ComputePipeline>();
