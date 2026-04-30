@@ -1,6 +1,7 @@
 use bevy::{
     asset::RenderAssetUsages,
     input::common_conditions,
+    mesh::VertexAttributeValues,
     mesh::{Indices, Mesh},
     prelude::*,
     render::gpu_readback::{Readback, ReadbackComplete},
@@ -16,24 +17,37 @@ pub struct TerrainPlugin;
 
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<FileRes>()
+        app.init_resource::<GPUData>()
             .add_systems(
                 Update,
                 init_terrain.run_if(in_state(crate::AppState::GeneratingTerrain)),
             )
             .add_systems(
                 Update,
-                print_file_res_and_write_to_file
-                    .run_if(common_conditions::input_just_pressed(KeyCode::KeyA)),
+                write_res_data_to_file.run_if(common_conditions::input_just_pressed(KeyCode::KeyS)),
+            )
+            .add_systems(
+                Update,
+                synchronize_gpu_positions.run_if(
+                    bevy::time::common_conditions::on_timer(std::time::Duration::from_secs_f32(
+                        0.35,
+                    ))
+                    .and(resource_exists_and_equals(crate::DebugConfig {
+                        is_wireframe_on: true,
+                        ..default()
+                    })),
+                ),
             );
     }
 }
 
+/// Helper resource used for deubgging purposes
 #[derive(Resource, Default, Reflect, Debug)]
 #[reflect(Resource)]
-struct FileRes {
-    written: bool,
+struct GPUData {
+    written_to_file: bool,
     data: Vec<f32>,
+    vertex_positions: Vec<Vec3>,
 }
 
 fn init_terrain(
@@ -74,7 +88,7 @@ fn init_terrain(
     // NOTE: Overwrite the existing dummy handles with ones pointing to the actual data
     r_buffer_handles.height_a = shaders::prepare_ssbo(&mut buffers, heights.clone());
 
-    // Print data from the CPU for debugging
+    // // Print data from the CPU for debugging
     // commands
     //     .spawn(Readback::buffer(r_buffer_handles.height_a.clone()))
     //     .observe(|event: On<ReadbackComplete>| {
@@ -89,18 +103,27 @@ fn init_terrain(
     //         info!("B: heights[0..10] {:?}", &data[0..10]);
     //     });
 
-    // TODO: stream_a is also the output buffer half the time
-    commands
-        .spawn(Readback::buffer(r_buffer_handles.stream_a.clone()))
-        .observe(print_output_stream_buffer::<'A'>);
+    // // TODO: stream_a is also the output buffer half the time
+    // commands
+    //     .spawn(Readback::buffer(r_buffer_handles.stream_a.clone()))
+    //     .observe(print_output_stream_buffer::<'A'>);
+
+    // commands
+    //     .spawn(Readback::buffer(r_buffer_handles.stream_b.clone()))
+    //     .observe(print_output_stream_buffer::<'B'>);
+
+    // commands
+    //     .spawn(Readback::buffer(r_buffer_handles.debug.clone()))
+    //     .observe(print_output_stream_buffer::<'D'>);
 
     commands
-        .spawn(Readback::buffer(r_buffer_handles.stream_b.clone()))
-        .observe(print_output_stream_buffer::<'B'>);
+        .spawn(Readback::buffer(r_buffer_handles.vertex_positions.clone()))
+        .observe(store_gpu_positions);
 
     // Create the custom material and add it to the materials assets
     let terrain_material_handle = materials.add(shaders::TerrainMaterial {
         height_buffer_handle: r_buffer_handles.height_a.clone(),
+        positions_buffer_handle: r_buffer_handles.vertex_positions.clone(),
     });
 
     let mut terrain_mesh = Mesh::new(
@@ -116,7 +139,7 @@ fn init_terrain(
         Name::new("plane"),
         Mesh3d(meshes.add(terrain_mesh)),
         MeshMaterial3d(terrain_material_handle.clone()),
-        Transform::from_translation(Vec3::new(-4.0, -1.0, 0.0)),
+        Transform::default(),
     ));
 
     // Overwrite the dummy default values for the uniforms
@@ -197,9 +220,10 @@ fn compute_cell_size(terrain: &Vec<[f32; 3]>, grid_length: usize) -> Vec2 {
 /// TODO: The output (e.g. out_stream) buffer changes each frame, so we should make some logic to only print the actual output buffer
 fn print_output_stream_buffer<const BUFFER_IDENT: char>(
     event: On<ReadbackComplete>,
-    mut r_file: ResMut<FileRes>,
+    mut r_gpu_data: ResMut<GPUData>,
 ) {
     let stream_data: Vec<f32> = event.to_shader_type();
+
     let min = stream_data
         .iter()
         .min_by(|a, b| a.partial_cmp(b).unwrap())
@@ -209,10 +233,14 @@ fn print_output_stream_buffer<const BUFFER_IDENT: char>(
         .max_by(|a, b| a.partial_cmp(b).unwrap())
         .unwrap_or(&-1.0);
 
-    r_file.data = stream_data.clone();
+    // r_gpu_data.data = stream_data.clone();
+    // TODO: Only do this in "debugging mode" (e.g. #cfg(debug  ), #cfg(debug_assertions)), basically a feature flag
+    // if BUFFER_IDENT == 'D' {
+    // r_file.data = stream_data.clone();
+    // }
 
     info!(
-        "{}: Stream {:?}, min {}, max {}",
+        "{}: Buffer {:?}, min {}, max {}",
         BUFFER_IDENT,
         &stream_data[0..10],
         min,
@@ -224,19 +252,46 @@ fn print_output_stream_buffer<const BUFFER_IDENT: char>(
     }
 }
 
-fn write_vec_to_file(filename: &str, data: Vec<f32>) -> Result {
-    let file = File::create(filename)?;
+fn store_gpu_positions(event: On<ReadbackComplete>, mut r_gpu_data: ResMut<GPUData>) {
+    let stream_data: Vec<Vec3> = event.to_shader_type();
+    r_gpu_data.vertex_positions = stream_data.clone();
+}
+
+fn write_res_data_to_file(r: Res<GPUData>) -> Result {
+    let file = File::create("debug_buffer.txt")?;
     let mut writer = BufWriter::new(file);
 
-    for value in data {
+    for value in &r.data {
         writeln!(writer, "{}", value)?;
     }
 
     Ok(())
 }
 
-fn print_file_res_and_write_to_file(r: Res<FileRes>) {
-    info!("{:?}", r);
+/// Synchronizes the positions read from the GPU onto the CPU
+/// Needed, so that Wireframe plugin recomputes the mesh correctly
+fn synchronize_gpu_positions(
+    mut meshes: ResMut<Assets<Mesh>>,
+    q_meshes: Query<&Mesh3d>,
+    r_gpu_data: Res<GPUData>,
+) {
+    let gpu_positions = &r_gpu_data.vertex_positions;
 
-    write_vec_to_file("stream_data_b.txt", r.data.clone());
+    if gpu_positions.len() == 0 {
+        return;
+    }
+
+    for mesh in &q_meshes {
+        if let Some(mesh) = meshes.get_mut(mesh) {
+            if let Some(VertexAttributeValues::Float32x3(positions)) =
+                mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
+            {
+                assert_eq!(positions.len(), gpu_positions.len());
+
+                for (i, p) in positions.iter_mut().enumerate() {
+                    *p = gpu_positions[i].into();
+                }
+            }
+        }
+    }
 }

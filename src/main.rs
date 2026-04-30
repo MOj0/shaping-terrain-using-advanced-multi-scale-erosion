@@ -1,6 +1,8 @@
+use bevy::color::palettes::css::*;
 use bevy::dev_tools::fps_overlay::{FpsOverlayConfig, FpsOverlayPlugin, FrameTimeGraphConfig};
+use bevy::input::common_conditions;
+use bevy::pbr::wireframe::{WireframeConfig, WireframePlugin};
 use bevy::prelude::*;
-use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy_inspector_egui::bevy_egui;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 
@@ -24,17 +26,26 @@ fn main() {
                     ..default()
                 },
             },
+            WireframePlugin::default(),
             bevy_egui::EguiPlugin::default(),
-            WorldInspectorPlugin::default().run_if(
-                bevy::input::common_conditions::input_toggle_active(false, KeyCode::Tab),
-            ),
+            WorldInspectorPlugin::default()
+                .run_if(common_conditions::input_toggle_active(false, KeyCode::Tab)),
             shaders::ShaderPlugin,
             terrain::TerrainPlugin,
             camera::CameraOrbitPlugin,
         ))
         .init_state::<AppState>()
+        .init_resource::<DebugConfig>()
         .insert_resource(ClearColor(Color::srgb_u8(102, 178, 212)))
+        .insert_resource(WireframeConfig {
+            global: false,
+            default_color: BLACK.into(),
+        })
         .add_systems(Startup, (setup, set_window_maximized))
+        .add_systems(
+            Update,
+            toggle_wireframe.run_if(common_conditions::input_just_pressed(KeyCode::KeyW)),
+        )
         .run();
 }
 
@@ -45,6 +56,20 @@ pub enum AppState {
     LoadingAssets,
     GeneratingTerrain,
     Running,
+}
+
+#[derive(Resource, Reflect, PartialEq)]
+#[reflect(Resource)]
+pub struct DebugConfig {
+    is_wireframe_on: bool,
+}
+
+impl Default for DebugConfig {
+    fn default() -> Self {
+        Self {
+            is_wireframe_on: false,
+        }
+    }
 }
 
 fn setup(mut commands: Commands) {
@@ -68,4 +93,13 @@ fn set_window_maximized(mut q_windows: Query<&mut Window, With<bevy::window::Pri
     for mut window in q_windows.iter_mut() {
         window.set_maximized(true);
     }
+}
+
+fn toggle_wireframe(
+    mut r_debug_config: ResMut<DebugConfig>,
+    mut r_wireframe_config: ResMut<WireframeConfig>,
+) {
+    r_debug_config.is_wireframe_on = !r_debug_config.is_wireframe_on;
+
+    r_wireframe_config.global = r_debug_config.is_wireframe_on;
 }

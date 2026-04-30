@@ -58,7 +58,8 @@ pub struct ComputeSSBOHandles {
     pub height_b: Handle<ShaderStorageBuffer>,
     pub stream_a: Handle<ShaderStorageBuffer>,
     pub stream_b: Handle<ShaderStorageBuffer>,
-    hardness: Handle<ShaderStorageBuffer>,
+    pub debug: Handle<ShaderStorageBuffer>,
+    pub vertex_positions: Handle<ShaderStorageBuffer>,
 }
 
 // This struct defines the data that will be passed to your shader
@@ -66,6 +67,8 @@ pub struct ComputeSSBOHandles {
 pub struct TerrainMaterial {
     #[storage(0)]
     pub height_buffer_handle: Handle<ShaderStorageBuffer>,
+    #[storage(1)]
+    pub positions_buffer_handle: Handle<ShaderStorageBuffer>,
 }
 
 #[derive(Resource, Clone, ExtractResource, ShaderType, Reflect)]
@@ -141,7 +144,8 @@ enum DualBufferingState {
 /// The node that will execute the compute shader
 #[derive(Default)]
 struct ComputeNode {
-    dual_buffering_state: DualBufferingState,
+    // NOTE: If this turns out to not be useful, delete the DualBufferingState struct as well
+    // dual_buffering_state: DualBufferingState,
 }
 
 impl Material for TerrainMaterial {
@@ -166,7 +170,8 @@ fn shader_setup(
         height_b: prepare_ssbo(&mut buffers, vec![0; BUFFER_LEN]),
         stream_a: prepare_ssbo(&mut buffers, vec![0; BUFFER_LEN]),
         stream_b: prepare_ssbo(&mut buffers, vec![0; BUFFER_LEN]),
-        hardness: prepare_ssbo(&mut buffers, vec![0; BUFFER_LEN]),
+        debug: prepare_ssbo(&mut buffers, vec![0; BUFFER_LEN]),
+        vertex_positions: prepare_ssbo(&mut buffers, vec![Vec3::ZERO; BUFFER_LEN]),
     });
 
     // Load in the heightfield texture
@@ -286,7 +291,7 @@ impl ComputeShaderPipelinePlugin {
         let height_b_buffer = r_gpu_buffers.get(&ssbo_handles.height_b).unwrap();
         let stream_a_buffer = r_gpu_buffers.get(&ssbo_handles.stream_a).unwrap();
         let stream_b_buffer = r_gpu_buffers.get(&ssbo_handles.stream_b).unwrap();
-        let hardness_buffer = r_gpu_buffers.get(&ssbo_handles.hardness).unwrap();
+        let debug_buffer = r_gpu_buffers.get(&ssbo_handles.debug).unwrap();
 
         let mut uniform_buffer = UniformBuffer::from(r_erosion_uniform_buffer.into_inner());
         uniform_buffer.write_buffer(&r_render_device, &r_queue);
@@ -299,7 +304,7 @@ impl ComputeShaderPipelinePlugin {
                 height_b_buffer.buffer.as_entire_buffer_binding(),
                 stream_a_buffer.buffer.as_entire_buffer_binding(),
                 stream_b_buffer.buffer.as_entire_buffer_binding(),
-                hardness_buffer.buffer.as_entire_buffer_binding(),
+                debug_buffer.buffer.as_entire_buffer_binding(),
                 &uniform_buffer,
             )),
         );
@@ -311,7 +316,7 @@ impl ComputeShaderPipelinePlugin {
                 height_a_buffer.buffer.as_entire_buffer_binding(),
                 stream_b_buffer.buffer.as_entire_buffer_binding(),
                 stream_a_buffer.buffer.as_entire_buffer_binding(),
-                hardness_buffer.buffer.as_entire_buffer_binding(),
+                debug_buffer.buffer.as_entire_buffer_binding(),
                 &uniform_buffer,
             )),
         );
@@ -322,13 +327,25 @@ impl ComputeShaderPipelinePlugin {
 }
 
 impl render_graph::Node for ComputeNode {
-    // TODO: We should only do this if the app is in the Running state. Need to derive ExtractResource to crate::AppState
-    fn update(&mut self, _world: &mut World) {
-        self.dual_buffering_state = match self.dual_buffering_state {
-            DualBufferingState::BindGroupA => DualBufferingState::BindGroupB,
-            DualBufferingState::BindGroupB => DualBufferingState::BindGroupA,
-        };
-    }
+    // // TODO: We should only do this if the app is in the Running state. Need to derive ExtractResource to crate::AppState or something.
+    // //      This `world` is of the RenderApp
+    // fn update(&mut self, world: &mut World) {
+    //     let time = world.resource::<Time>();
+    //     if time.elapsed_secs() < 3.0 {
+    //         return;
+    //     }
+    //     // let Some(app_state) = world.get_resource::<State<crate::AppState>>() else {
+    //     //     return;
+    //     // };
+    //     // if *app_state.get() != crate::AppState::Running {
+    //     //     return;
+    //     // }
+
+    //     // self.dual_buffering_state = match self.dual_buffering_state {
+    //     //     DualBufferingState::BindGroupA => DualBufferingState::BindGroupB,
+    //     //     DualBufferingState::BindGroupB => DualBufferingState::BindGroupA,
+    //     // };
+    // }
 
     fn run<'w>(
         &self,
@@ -336,29 +353,41 @@ impl render_graph::Node for ComputeNode {
         render_context: &mut RenderContext<'w>,
         world: &'w World,
     ) -> Result<(), render_graph::NodeRunError> {
+        // let time = world.resource::<Time>();
+        // if time.elapsed_secs() < 3.0 {
+        //     return Ok(());
+        // }
+
+        // TODO: This `world` is of the RenderApp
+        // let Some(app_state) = world.get_resource::<State<crate::AppState>>() else {
+        //     return Ok(());
+        // };
+        // if *app_state.get() != crate::AppState::Running {
+        //     return Ok(());
+        // }
+
         let bind_groups = world.resource::<ComputeBindGroups>();
         let pipeline_cache = world.resource::<PipelineCache>();
         let pipeline = world.resource::<ComputePipeline>();
 
         if let Some(compute_pipeline) = pipeline_cache.get_compute_pipeline(pipeline.pipeline_id) {
-            let mut pass =
-                render_context
-                    .command_encoder()
-                    .begin_compute_pass(&ComputePassDescriptor {
-                        label: Some("our pipeline"),
-                        ..default()
-                    });
-
             let dispatch_size = (TEXTURE_SIZE / 8) as u32;
 
-            let bind_group_index = match self.dual_buffering_state {
-                DualBufferingState::BindGroupA => 0,
-                DualBufferingState::BindGroupB => 1,
-            };
+            for i in 0..100 {
+                let bind_group_index = i % 2;
 
-            pass.set_bind_group(0, &bind_groups.0[bind_group_index], &[]);
-            pass.set_pipeline(compute_pipeline);
-            pass.dispatch_workgroups(dispatch_size, dispatch_size, 1);
+                let mut pass =
+                    render_context
+                        .command_encoder()
+                        .begin_compute_pass(&ComputePassDescriptor {
+                            label: Some("our pipeline"),
+                            ..default()
+                        });
+
+                pass.set_bind_group(0, &bind_groups.0[bind_group_index], &[]);
+                pass.set_pipeline(compute_pipeline);
+                pass.dispatch_workgroups(dispatch_size, dispatch_size, 1);
+            }
         }
 
         Ok(())

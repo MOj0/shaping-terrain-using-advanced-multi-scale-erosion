@@ -4,6 +4,7 @@
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<storage, read_write> heights: array<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(1) var<storage, read_write> positions: array<vec3<f32>>;
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
@@ -25,10 +26,11 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     // Read data from SSBO
     let height = heights[vertex.vertex_index];
     
-    // let local_position = vertex.position + vertex.normal * height;
-    // let local_position = vertex.position + vertex.normal * -0.6;
-    // let local_position = vertex.position + vec3<f32>(height, 0.0, 0.0);
-    let local_position = vertex.position + vec3<f32>(0.0, height, 0.0);
+    // NOTE: We must not add the height, but set it instead.
+    // Otherwise the terrain's Y won't drop below the vertex.position.y. DUH!
+    var local_position = vec3<f32>(vertex.position.x, height, vertex.position.z);
+
+    positions[vertex.vertex_index] = local_position;
 
     var world_from_local = mesh_functions::get_world_from_local(vertex.instance_index);
     out.world_position = mesh_functions::mesh_position_local_to_world(world_from_local, vec4(local_position, 1.0));

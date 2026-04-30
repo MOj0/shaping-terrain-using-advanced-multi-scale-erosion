@@ -1,11 +1,10 @@
-
 @group(0) @binding(0) var<storage, read_write> in_terrain: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out_terrain : array<f32>;
 
 @group(0) @binding(2) var<storage, read_write> in_stream : array<f32>;
 @group(0) @binding(3) var<storage, read_write> out_stream : array<f32>;
 
-@group(0) @binding(4) var<storage, read_write> in_hardness : array<f32>;
+@group(0) @binding(4) var<storage, read_write> out_debug : array<f32>;
 
 @group(0) @binding(5) var<uniform> params: ErosionUniforms;
 
@@ -119,7 +118,6 @@ fn computeIncomingFlowWeighted(p: vec2<i32>) -> f32 {
 }
 
 
-
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let x = i32(gid.x);
@@ -138,18 +136,16 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let p = vec2<i32>(x, y);
 
     // Flow accumulation
-    var stream = length(params.cell_size);
-    stream += computeIncomingFlowWeighted(p);
+    let incoming_flow = computeIncomingFlowWeighted(p);
+    let stream = length(params.cell_size) + incoming_flow;
 
     // Steepest slope
-    let d = getFlowSteepest(p);
-    let receiver_height = in_terrain[toIndex1D_v(p + d)];
-    let steepest_slope = abs(slope(p + d, p));
+    let neighbor_direction = getFlowSteepest(p);
+    let receiver_height = in_terrain[toIndex1D_v(p + neighbor_direction)];
+    let steepest_slope = abs(slope(p + neighbor_direction, p));
 
     // Stream power
-    var spe = pow(stream, params.p_sa) *
-              clamp(pow(steepest_slope, params.p_sl), 0.0, 1.0);
-
+    var spe = pow(stream, params.p_sa) * clamp(pow(steepest_slope, params.p_sl), 0.0, 1.0);
     spe = clamp(spe, 0.0, params.max_spe);
     spe *= params.k;
 
@@ -162,15 +158,5 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     out_stream[id] = stream;
 
     /// DEBUG
-    // out_stream[id] = stream;
-    // out_stream[id] = steepest_slope;
-    // out_stream[id] = receiver_height;
-    // out_stream[id] = f32(d[1]);
-    // out_stream[id] = stream;
-    // out_stream[id] += 1.0;
-    // out_stream[id] = in_stream[id] + 1.0;
-
-    // out_terrain[id] = params.debug;
-    // out_terrain[id] = in_terrain[id] - 0.1;
-    // out_terrain[id] = in_terrain[id] + 1.0;
+    out_debug[id] = f32(neighbor_direction[0] + 2 * neighbor_direction[1]);
 }
