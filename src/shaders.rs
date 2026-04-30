@@ -37,6 +37,8 @@ impl Plugin for ShaderPlugin {
 const COMPUTE_EROSION_SHADER_PATH: &str = "shaders/erosion.wgsl";
 /// Path to the deposition compute shader
 const COMPUTE_DEPOSITION_SHADER_PATH: &str = "shaders/deposition.wgsl";
+/// Path to the thermal compute shader
+const COMPUTE_THERMAL_SHADER_PATH: &str = "shaders/thermal.wgsl";
 
 /// Path to the render shader
 const RENDER_SHADER_PATH: &str = "shaders/terrain_render.wgsl";
@@ -154,6 +156,49 @@ impl Default for DepositionUniforms {
     }
 }
 
+#[derive(Resource, Clone, ExtractResource, ShaderType, Reflect)]
+#[reflect(Resource)]
+pub struct ThermalUniforms {
+    pub nx: i32,
+    pub ny: i32,
+    // NOTE: Opposite corners of the grid
+    pub a: Vec2, // TODO: Rename to something like grid_corner1
+    pub b: Vec2, // TODO: Rename to something like grid_corner2
+    pub cell_size: Vec2,
+
+    pub eps: f32,
+    pub tan_threshold_angle: f32,
+    pub noisified_angle: i32,
+    pub noise_min: f32,
+    pub noise_max: f32,
+    pub noise_wavelength: f32,
+    pub use_threshold_map: i32,
+
+    pub debug: f32,
+}
+
+impl Default for ThermalUniforms {
+    fn default() -> Self {
+        Self {
+            nx: TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
+            ny: TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
+            a: Vec2::ZERO, //NOTE: This will be overwritten by the actual corners of the grid
+            b: Vec2::ONE,  //NOTE: This will be overwritten by the actual corners of the grid
+            cell_size: Vec2::ZERO, // NOTE: This will be overwritten by the actual size of the cell
+
+            eps: 0.00005,
+            tan_threshold_angle: 0.57,
+            noisified_angle: 1,
+            noise_min: 0.9,
+            noise_max: 1.4,
+            noise_wavelength: 0.0023,
+            use_threshold_map: 0,
+
+            debug: 1.0,
+        }
+    }
+}
+
 //////////
 
 /// Plugin for setting up the render node
@@ -217,6 +262,7 @@ fn shader_setup(
     // Insert the uniforms
     commands.insert_resource(ErosionUniforms::default());
     commands.insert_resource(DepositionUniforms::default());
+    commands.insert_resource(ThermalUniforms::default());
 }
 
 /// Waits until the texture asset is loaded and changes the app state
@@ -251,6 +297,7 @@ impl Plugin for ComputeShaderPipelinePlugin {
             ExtractResourcePlugin::<ComputeSSBOHandles>::default(),
             ExtractResourcePlugin::<ErosionUniforms>::default(),
             ExtractResourcePlugin::<DepositionUniforms>::default(),
+            ExtractResourcePlugin::<ThermalUniforms>::default(),
             ExtractResourcePlugin::<ImageHandle>::default(),
         ));
 
@@ -312,20 +359,33 @@ impl ComputeShaderPipelinePlugin {
             ),
         );
 
+        let thermal_compute_layout = BindGroupLayoutDescriptor::new(
+            "thermal",
+            &BindGroupLayoutEntries::sequential(
+                ShaderStages::COMPUTE,
+                (
+                    binding_types::storage_buffer::<Vec<f32>>(false),
+                    binding_types::storage_buffer::<Vec<f32>>(false),
+                    binding_types::storage_buffer::<Vec<f32>>(false),
+                    binding_types::uniform_buffer::<ThermalUniforms>(false),
+                ),
+            ),
+        );
+
         // Load the compute shader
-        let compute_shader = asset_server.load(COMPUTE_DEPOSITION_SHADER_PATH);
+        let compute_shader = asset_server.load(COMPUTE_THERMAL_SHADER_PATH);
 
         // Make a new compute pipeline
         let pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: Some("Our pipeline".into()),
-            layout: vec![deposition_compute_layout.clone()],
+            layout: vec![thermal_compute_layout.clone()],
             shader: compute_shader.clone(),
             ..default()
         });
 
         // We will use this when writing the render code in the Render Graph's Node
         commands.insert_resource(ComputePipeline {
-            layout: deposition_compute_layout,
+            layout: thermal_compute_layout,
             pipeline_id: pipeline,
         });
     }
@@ -341,6 +401,7 @@ impl ComputeShaderPipelinePlugin {
         r_queue: Res<RenderQueue>,
         r_erosion_uniform_buffer: Res<ErosionUniforms>,
         r_deposition_uniform_buffer: Res<DepositionUniforms>,
+        r_thermal_uniform_buffer: Res<ThermalUniforms>,
     ) {
         // Get handles to the SSBOs from the ComputeSSBOHandles
         let height_a_buffer = r_gpu_buffers.get(&ssbo_handles.height_a).unwrap();
@@ -354,9 +415,12 @@ impl ComputeShaderPipelinePlugin {
         // let mut erosion_uniform_buffer = UniformBuffer::from(r_erosion_uniform_buffer.into_inner());
         // erosion_uniform_buffer.write_buffer(&r_render_device, &r_queue);
 
-        let mut deposition_uniform_buffer =
-            UniformBuffer::from(r_deposition_uniform_buffer.into_inner());
-        deposition_uniform_buffer.write_buffer(&r_render_device, &r_queue);
+        // let mut deposition_uniform_buffer =
+        //     UniformBuffer::from(r_deposition_uniform_buffer.into_inner());
+        // deposition_uniform_buffer.write_buffer(&r_render_device, &r_queue);
+
+        let mut thermal_uniform_buffer = UniformBuffer::from(r_thermal_uniform_buffer.into_inner());
+        thermal_uniform_buffer.write_buffer(&r_render_device, &r_queue);
 
         // let erosion_bind_group0 = r_render_device.create_bind_group(
         //     None,
@@ -383,39 +447,60 @@ impl ComputeShaderPipelinePlugin {
         //     )),
         // );
 
-        let deposition_bind_group0 = r_render_device.create_bind_group(
+        // let deposition_bind_group0 = r_render_device.create_bind_group(
+        //     None,
+        //     &r_pipeline_cache.get_bind_group_layout(&r_pipeline.layout),
+        //     &BindGroupEntries::sequential((
+        //         height_a_buffer.buffer.as_entire_buffer_binding(),
+        //         height_b_buffer.buffer.as_entire_buffer_binding(),
+        //         stream_a_buffer.buffer.as_entire_buffer_binding(),
+        //         stream_b_buffer.buffer.as_entire_buffer_binding(),
+        //         sed_a_buffer.buffer.as_entire_buffer_binding(),
+        //         sed_b_buffer.buffer.as_entire_buffer_binding(),
+        //         debug_buffer.buffer.as_entire_buffer_binding(),
+        //         &deposition_uniform_buffer,
+        //     )),
+        // );
+        // let deposition_bind_group1 = r_render_device.create_bind_group(
+        //     None,
+        //     &r_pipeline_cache.get_bind_group_layout(&r_pipeline.layout),
+        //     &BindGroupEntries::sequential((
+        //         height_b_buffer.buffer.as_entire_buffer_binding(),
+        //         height_a_buffer.buffer.as_entire_buffer_binding(),
+        //         stream_b_buffer.buffer.as_entire_buffer_binding(),
+        //         stream_a_buffer.buffer.as_entire_buffer_binding(),
+        //         sed_b_buffer.buffer.as_entire_buffer_binding(),
+        //         sed_a_buffer.buffer.as_entire_buffer_binding(),
+        //         debug_buffer.buffer.as_entire_buffer_binding(),
+        //         &deposition_uniform_buffer,
+        //     )),
+        // );
+
+        let thermal_bind_group0 = r_render_device.create_bind_group(
             None,
             &r_pipeline_cache.get_bind_group_layout(&r_pipeline.layout),
             &BindGroupEntries::sequential((
                 height_a_buffer.buffer.as_entire_buffer_binding(),
                 height_b_buffer.buffer.as_entire_buffer_binding(),
-                stream_a_buffer.buffer.as_entire_buffer_binding(),
-                stream_b_buffer.buffer.as_entire_buffer_binding(),
-                sed_a_buffer.buffer.as_entire_buffer_binding(),
-                sed_b_buffer.buffer.as_entire_buffer_binding(),
                 debug_buffer.buffer.as_entire_buffer_binding(),
-                &deposition_uniform_buffer,
+                &thermal_uniform_buffer,
             )),
         );
-        let deposition_bind_group1 = r_render_device.create_bind_group(
+        let thermal_bind_group1 = r_render_device.create_bind_group(
             None,
             &r_pipeline_cache.get_bind_group_layout(&r_pipeline.layout),
             &BindGroupEntries::sequential((
                 height_b_buffer.buffer.as_entire_buffer_binding(),
                 height_a_buffer.buffer.as_entire_buffer_binding(),
-                stream_b_buffer.buffer.as_entire_buffer_binding(),
-                stream_a_buffer.buffer.as_entire_buffer_binding(),
-                sed_b_buffer.buffer.as_entire_buffer_binding(),
-                sed_a_buffer.buffer.as_entire_buffer_binding(),
                 debug_buffer.buffer.as_entire_buffer_binding(),
-                &deposition_uniform_buffer,
+                &thermal_uniform_buffer,
             )),
         );
 
         // We will use this when writing the render code in the Render Graph's Node
         commands.insert_resource(ComputeBindGroups([
-            deposition_bind_group0,
-            deposition_bind_group1,
+            thermal_bind_group0,
+            thermal_bind_group1,
         ]));
     }
 }
@@ -430,6 +515,11 @@ impl render_graph::Node for ComputeNode {
         let bind_groups = world.resource::<ComputeBindGroups>();
         let pipeline_cache = world.resource::<PipelineCache>();
         let pipeline = world.resource::<ComputePipeline>();
+
+        let time = world.resource::<Time>();
+        if time.elapsed_secs() < 3.0 {
+            return Ok(());
+        }
 
         if let Some(compute_pipeline) = pipeline_cache.get_compute_pipeline(pipeline.pipeline_id) {
             let dispatch_size = (TEXTURE_SIZE / 8) as u32;
