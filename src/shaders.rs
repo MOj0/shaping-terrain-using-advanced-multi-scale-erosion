@@ -205,16 +205,20 @@ impl Default for ThermalUniforms {
 /// TODO: Possibly move to a separate file
 struct ComputeShaderPipelinePlugin;
 
-/// Resource containing the shader bind groups
-/// We need 2 bind groups to do dual buffering
+/// Resource containing bind groups for compute shaders
+/// Each compute shader uses double buffering
 #[derive(Resource)]
-struct ComputeBindGroups([BindGroup; 2]);
+struct ComputeBindGroups {
+    erosion: [BindGroup; 2],
+    deposition: [BindGroup; 2],
+}
 
 /// Compute shader pipeline
 #[derive(Resource)]
 struct ComputePipeline {
     erosion_layout: BindGroupLayoutDescriptor,
     erosion_pipeline: CachedComputePipelineId,
+    deposition_layout: BindGroupLayoutDescriptor,
     deposition_pipeline: CachedComputePipelineId,
 }
 
@@ -353,7 +357,7 @@ impl ComputeShaderPipelinePlugin {
             ),
         );
 
-        let deposition_compute_layout = BindGroupLayoutDescriptor::new(
+        let deposition_layout = BindGroupLayoutDescriptor::new(
             "deposition",
             &BindGroupLayoutEntries::sequential(
                 ShaderStages::COMPUTE,
@@ -370,7 +374,7 @@ impl ComputeShaderPipelinePlugin {
             ),
         );
 
-        let thermal_compute_layout = BindGroupLayoutDescriptor::new(
+        let thermal_layout = BindGroupLayoutDescriptor::new(
             "thermal",
             &BindGroupLayoutEntries::sequential(
                 ShaderStages::COMPUTE,
@@ -396,7 +400,7 @@ impl ComputeShaderPipelinePlugin {
         let deposition_pipeline =
             pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
                 label: Some("Deposition".into()),
-                layout: vec![deposition_compute_layout.clone()],
+                layout: vec![deposition_layout.clone()],
                 shader: deposition_shader.clone(),
                 ..default()
             });
@@ -405,6 +409,7 @@ impl ComputeShaderPipelinePlugin {
         commands.insert_resource(ComputePipeline {
             erosion_layout,
             erosion_pipeline,
+            deposition_layout,
             deposition_pipeline,
         });
     }
@@ -434,9 +439,9 @@ impl ComputeShaderPipelinePlugin {
         let mut erosion_uniform_buffer = UniformBuffer::from(r_erosion_uniform_buffer.into_inner());
         erosion_uniform_buffer.write_buffer(&r_render_device, &r_queue);
 
-        // let mut deposition_uniform_buffer =
-        //     UniformBuffer::from(r_deposition_uniform_buffer.into_inner());
-        // deposition_uniform_buffer.write_buffer(&r_render_device, &r_queue);
+        let mut deposition_uniform_buffer =
+            UniformBuffer::from(r_deposition_uniform_buffer.into_inner());
+        deposition_uniform_buffer.write_buffer(&r_render_device, &r_queue);
 
         // let mut thermal_uniform_buffer = UniformBuffer::from(r_thermal_uniform_buffer.into_inner());
         // thermal_uniform_buffer.write_buffer(&r_render_device, &r_queue);
@@ -466,34 +471,34 @@ impl ComputeShaderPipelinePlugin {
             )),
         );
 
-        // let deposition_bind_group0 = r_render_device.create_bind_group(
-        //     None,
-        //     &r_pipeline_cache.get_bind_group_layout(&r_pipeline.layout),
-        //     &BindGroupEntries::sequential((
-        //         height_a_buffer.buffer.as_entire_buffer_binding(),
-        //         height_b_buffer.buffer.as_entire_buffer_binding(),
-        //         stream_a_buffer.buffer.as_entire_buffer_binding(),
-        //         stream_b_buffer.buffer.as_entire_buffer_binding(),
-        //         sed_a_buffer.buffer.as_entire_buffer_binding(),
-        //         sed_b_buffer.buffer.as_entire_buffer_binding(),
-        //         debug_buffer.buffer.as_entire_buffer_binding(),
-        //         &deposition_uniform_buffer,
-        //     )),
-        // );
-        // let deposition_bind_group1 = r_render_device.create_bind_group(
-        //     None,
-        //     &r_pipeline_cache.get_bind_group_layout(&r_pipeline.layout),
-        //     &BindGroupEntries::sequential((
-        //         height_b_buffer.buffer.as_entire_buffer_binding(),
-        //         height_a_buffer.buffer.as_entire_buffer_binding(),
-        //         stream_b_buffer.buffer.as_entire_buffer_binding(),
-        //         stream_a_buffer.buffer.as_entire_buffer_binding(),
-        //         sed_b_buffer.buffer.as_entire_buffer_binding(),
-        //         sed_a_buffer.buffer.as_entire_buffer_binding(),
-        //         debug_buffer.buffer.as_entire_buffer_binding(),
-        //         &deposition_uniform_buffer,
-        //     )),
-        // );
+        let deposition_bind_group0 = r_render_device.create_bind_group(
+            None,
+            &r_pipeline_cache.get_bind_group_layout(&r_pipeline.deposition_layout),
+            &BindGroupEntries::sequential((
+                height_a_buffer.buffer.as_entire_buffer_binding(),
+                height_b_buffer.buffer.as_entire_buffer_binding(),
+                stream_a_buffer.buffer.as_entire_buffer_binding(),
+                stream_b_buffer.buffer.as_entire_buffer_binding(),
+                sed_a_buffer.buffer.as_entire_buffer_binding(),
+                sed_b_buffer.buffer.as_entire_buffer_binding(),
+                debug_buffer.buffer.as_entire_buffer_binding(),
+                &deposition_uniform_buffer,
+            )),
+        );
+        let deposition_bind_group1 = r_render_device.create_bind_group(
+            None,
+            &r_pipeline_cache.get_bind_group_layout(&r_pipeline.deposition_layout),
+            &BindGroupEntries::sequential((
+                height_b_buffer.buffer.as_entire_buffer_binding(),
+                height_a_buffer.buffer.as_entire_buffer_binding(),
+                stream_b_buffer.buffer.as_entire_buffer_binding(),
+                stream_a_buffer.buffer.as_entire_buffer_binding(),
+                sed_b_buffer.buffer.as_entire_buffer_binding(),
+                sed_a_buffer.buffer.as_entire_buffer_binding(),
+                debug_buffer.buffer.as_entire_buffer_binding(),
+                &deposition_uniform_buffer,
+            )),
+        );
 
         // let thermal_bind_group0 = r_render_device.create_bind_group(
         //     None,
@@ -516,11 +521,10 @@ impl ComputeShaderPipelinePlugin {
         //     )),
         // );
 
-        // We will use this when writing the render code in the Render Graph's Node
-        commands.insert_resource(ComputeBindGroups([
-            erosion_bind_group0,
-            erosion_bind_group1,
-        ]));
+        commands.insert_resource(ComputeBindGroups {
+            erosion: [erosion_bind_group0, erosion_bind_group1],
+            deposition: [deposition_bind_group0, deposition_bind_group1],
+        });
     }
 }
 
@@ -531,36 +535,38 @@ impl render_graph::Node for ComputeNode {
         render_context: &mut RenderContext<'w>,
         world: &'w World,
     ) -> Result<(), render_graph::NodeRunError> {
-        let bind_groups = world.resource::<ComputeBindGroups>();
+        let compute_bind_groups = world.resource::<ComputeBindGroups>();
         let pipeline_cache = world.resource::<PipelineCache>();
         let pipeline = world.resource::<ComputePipeline>();
 
         let Some(terrain_config) = world.get_resource::<crate::terrain::TerrainConfig>() else {
             return Ok(());
         };
-        if !terrain_config.run_erosion {
-            return Ok(());
-        }
 
-        if let Some(erosion_pipeline) =
-            pipeline_cache.get_compute_pipeline(pipeline.erosion_pipeline)
-        {
-            let dispatch_size = (TEXTURE_SIZE / 8) as u32;
+        let dispatch_size = (TEXTURE_SIZE / 8) as u32;
 
-            for i in 0..100 {
-                let bind_group_index = i % 2;
+        let terrain_computer =
+            TerrainComputer::new(pipeline, compute_bind_groups, pipeline_cache, dispatch_size);
+        let erosion_computer = ErosionComputer(&terrain_computer);
+        let deposition_computer = DepositionComputer(&terrain_computer);
 
-                let mut pass =
-                    render_context
-                        .command_encoder()
-                        .begin_compute_pass(&ComputePassDescriptor {
-                            label: Some("erosion pipeline"),
-                            ..default()
-                        });
+        let mut pass =
+            render_context
+                .command_encoder()
+                .begin_compute_pass(&ComputePassDescriptor {
+                    label: Some("compute pipeline"),
+                    ..default()
+                });
 
-                pass.set_bind_group(0, &bind_groups.0[bind_group_index], &[]);
-                pass.set_pipeline(erosion_pipeline);
-                pass.dispatch_workgroups(dispatch_size, dispatch_size, 1);
+        for i in 0..2 {
+            let bind_group_index = i % 2;
+
+            // TODO: Debug if both shaders are run, only the second (deposition) result is taken into account
+            if terrain_config.run_erosion {
+                erosion_computer.compute(&mut pass, bind_group_index);
+            }
+            if terrain_config.run_deposition {
+                deposition_computer.compute(&mut pass, bind_group_index);
             }
         }
 
@@ -578,4 +584,71 @@ pub fn prepare_ssbo<T: ShaderType + ShaderSize + WriteInto>(
     buffer.buffer_description.usage |= BufferUsages::COPY_SRC;
 
     buffers.add(buffer)
+}
+
+trait TerrainComputerShader {
+    fn compute(&self, pass: &mut ComputePass, bind_group_index: usize);
+}
+
+struct TerrainComputer<'a> {
+    pipeline: &'a ComputePipeline,
+    compute_bind_groups: &'a ComputeBindGroups,
+    pipeline_cache: &'a PipelineCache,
+    dispatch_size: u32,
+}
+
+#[derive(Deref)]
+struct ErosionComputer<'a>(&'a TerrainComputer<'a>);
+
+#[derive(Deref)]
+struct DepositionComputer<'a>(&'a TerrainComputer<'a>);
+
+impl<'a> TerrainComputer<'a> {
+    fn new(
+        pipeline: &'a ComputePipeline,
+        compute_bind_groups: &'a ComputeBindGroups,
+        pipeline_cache: &'a PipelineCache,
+        dispatch_size: u32,
+    ) -> Self {
+        TerrainComputer {
+            pipeline,
+            compute_bind_groups,
+            pipeline_cache,
+            dispatch_size,
+        }
+    }
+}
+
+impl<'a> TerrainComputerShader for ErosionComputer<'a> {
+    fn compute(&self, pass: &mut ComputePass, bind_group_index: usize) {
+        let Some(erosion_pipeline) = self
+            .pipeline_cache
+            .get_compute_pipeline(self.pipeline.erosion_pipeline)
+        else {
+            return;
+        };
+
+        pass.set_bind_group(0, &self.compute_bind_groups.erosion[bind_group_index], &[]);
+        pass.set_pipeline(erosion_pipeline);
+        pass.dispatch_workgroups(self.dispatch_size, self.dispatch_size, 1);
+    }
+}
+
+impl<'a> TerrainComputerShader for DepositionComputer<'a> {
+    fn compute(&self, pass: &mut ComputePass, bind_group_index: usize) {
+        let Some(deposition_pipeline) = self
+            .pipeline_cache
+            .get_compute_pipeline(self.pipeline.deposition_pipeline)
+        else {
+            return;
+        };
+
+        pass.set_bind_group(
+            0,
+            &self.compute_bind_groups.deposition[bind_group_index],
+            &[],
+        );
+        pass.set_pipeline(deposition_pipeline);
+        pass.dispatch_workgroups(self.dispatch_size, self.dispatch_size, 1);
+    }
 }

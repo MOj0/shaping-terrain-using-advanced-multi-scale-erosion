@@ -28,6 +28,7 @@ impl Plugin for TerrainPlugin {
                 Update,
                 write_res_data_to_file.run_if(common_conditions::input_just_pressed(KeyCode::KeyS)),
             )
+            .add_systems(Update, change_terrain_config)
             .add_systems(
                 Update,
                 synchronize_gpu_positions.run_if(
@@ -323,6 +324,20 @@ fn synchronize_gpu_positions(
                     *p = gpu_positions[i].into();
                 }
             }
+
+            mesh.compute_normals();
         }
+    }
+}
+
+fn change_terrain_config(
+    mut r_terrain_config: ResMut<TerrainConfig>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+) {
+    if keyboard.just_pressed(KeyCode::KeyE) {
+        r_terrain_config.run_erosion = !r_terrain_config.run_erosion;
+    }
+    if keyboard.just_pressed(KeyCode::KeyD) {
+        r_terrain_config.run_deposition = !r_terrain_config.run_deposition;
     }
 }
