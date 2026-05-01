@@ -65,7 +65,8 @@ pub struct ComputeSSBOHandles {
     pub sed_a: Handle<ShaderStorageBuffer>,
     pub sed_b: Handle<ShaderStorageBuffer>,
 
-    pub debug: Handle<ShaderStorageBuffer>,
+    pub debug_a: Handle<ShaderStorageBuffer>,
+    pub debug_b: Handle<ShaderStorageBuffer>,
 
     pub vertex_positions: Handle<ShaderStorageBuffer>,
 }
@@ -211,6 +212,7 @@ struct ComputeShaderPipelinePlugin;
 struct ComputeBindGroups {
     erosion: [BindGroup; 2],
     deposition: [BindGroup; 2],
+    thermal: [BindGroup; 2],
 }
 
 /// Compute shader pipeline
@@ -220,6 +222,8 @@ struct ComputePipeline {
     erosion_pipeline: CachedComputePipelineId,
     deposition_layout: BindGroupLayoutDescriptor,
     deposition_pipeline: CachedComputePipelineId,
+    thermal_layout: BindGroupLayoutDescriptor,
+    thermal_pipeline: CachedComputePipelineId,
 }
 
 /// Label to identify the node in the render graph
@@ -256,7 +260,8 @@ fn shader_setup(
         sed_a: prepare_ssbo(&mut buffers, vec![0.0; BUFFER_LEN]),
         sed_b: prepare_ssbo(&mut buffers, vec![0.0; BUFFER_LEN]),
 
-        debug: prepare_ssbo(&mut buffers, vec![0.0; BUFFER_LEN]),
+        debug_a: prepare_ssbo(&mut buffers, vec![0.0; BUFFER_LEN]),
+        debug_b: prepare_ssbo(&mut buffers, vec![0.0; BUFFER_LEN]),
 
         vertex_positions: prepare_ssbo(&mut buffers, vec![Vec3::ZERO; BUFFER_LEN]),
     });
@@ -347,11 +352,12 @@ impl ComputeShaderPipelinePlugin {
             &BindGroupLayoutEntries::sequential(
                 ShaderStages::COMPUTE,
                 (
-                    binding_types::storage_buffer::<Vec<f32>>(false),
-                    binding_types::storage_buffer::<Vec<f32>>(false),
-                    binding_types::storage_buffer::<Vec<f32>>(false),
-                    binding_types::storage_buffer::<Vec<f32>>(false),
-                    binding_types::storage_buffer::<Vec<f32>>(false),
+                    binding_types::storage_buffer::<Vec<f32>>(false), // in_terrain
+                    binding_types::storage_buffer::<Vec<f32>>(false), // out_terrain
+                    binding_types::storage_buffer::<Vec<f32>>(false), // in_stream
+                    binding_types::storage_buffer::<Vec<f32>>(false), // out_stream
+                    binding_types::storage_buffer::<Vec<f32>>(false), // in_debug
+                    binding_types::storage_buffer::<Vec<f32>>(false), // out_debug
                     binding_types::uniform_buffer::<ErosionUniforms>(false),
                 ),
             ),
@@ -362,13 +368,14 @@ impl ComputeShaderPipelinePlugin {
             &BindGroupLayoutEntries::sequential(
                 ShaderStages::COMPUTE,
                 (
-                    binding_types::storage_buffer::<Vec<f32>>(false),
-                    binding_types::storage_buffer::<Vec<f32>>(false),
-                    binding_types::storage_buffer::<Vec<f32>>(false),
-                    binding_types::storage_buffer::<Vec<f32>>(false),
-                    binding_types::storage_buffer::<Vec<f32>>(false),
-                    binding_types::storage_buffer::<Vec<f32>>(false),
-                    binding_types::storage_buffer::<Vec<f32>>(false),
+                    binding_types::storage_buffer::<Vec<f32>>(false), // in_terrain
+                    binding_types::storage_buffer::<Vec<f32>>(false), // out_terrain
+                    binding_types::storage_buffer::<Vec<f32>>(false), // in_stream
+                    binding_types::storage_buffer::<Vec<f32>>(false), // out_stream
+                    binding_types::storage_buffer::<Vec<f32>>(false), // in_sed
+                    binding_types::storage_buffer::<Vec<f32>>(false), // out_sed
+                    binding_types::storage_buffer::<Vec<f32>>(false), // in_debug
+                    binding_types::storage_buffer::<Vec<f32>>(false), // out_debug
                     binding_types::uniform_buffer::<DepositionUniforms>(false),
                 ),
             ),
@@ -379,9 +386,10 @@ impl ComputeShaderPipelinePlugin {
             &BindGroupLayoutEntries::sequential(
                 ShaderStages::COMPUTE,
                 (
-                    binding_types::storage_buffer::<Vec<f32>>(false),
-                    binding_types::storage_buffer::<Vec<f32>>(false),
-                    binding_types::storage_buffer::<Vec<f32>>(false),
+                    binding_types::storage_buffer::<Vec<f32>>(false), // in_terrain
+                    binding_types::storage_buffer::<Vec<f32>>(false), // out_terrain
+                    binding_types::storage_buffer::<Vec<f32>>(false), // in_debug
+                    binding_types::storage_buffer::<Vec<f32>>(false), // out_debug
                     binding_types::uniform_buffer::<ThermalUniforms>(false),
                 ),
             ),
@@ -389,6 +397,7 @@ impl ComputeShaderPipelinePlugin {
 
         let erosion_shader = asset_server.load(COMPUTE_EROSION_SHADER_PATH);
         let deposition_shader = asset_server.load(COMPUTE_DEPOSITION_SHADER_PATH);
+        let thermal_shader = asset_server.load(COMPUTE_THERMAL_SHADER_PATH);
 
         let erosion_pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: Some("Erosion".into()),
@@ -405,12 +414,21 @@ impl ComputeShaderPipelinePlugin {
                 ..default()
             });
 
+        let thermal_pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
+            label: Some("Thermal".into()),
+            layout: vec![thermal_layout.clone()],
+            shader: thermal_shader.clone(),
+            ..default()
+        });
+
         // We will use this when writing the render code in the Render Graph's Node
         commands.insert_resource(ComputePipeline {
             erosion_layout,
             erosion_pipeline,
             deposition_layout,
             deposition_pipeline,
+            thermal_layout,
+            thermal_pipeline,
         });
     }
 
@@ -434,7 +452,8 @@ impl ComputeShaderPipelinePlugin {
         let stream_b_buffer = r_gpu_buffers.get(&ssbo_handles.stream_b).unwrap();
         let sed_a_buffer = r_gpu_buffers.get(&ssbo_handles.sed_a).unwrap();
         let sed_b_buffer = r_gpu_buffers.get(&ssbo_handles.sed_b).unwrap();
-        let debug_buffer = r_gpu_buffers.get(&ssbo_handles.debug).unwrap();
+        let debug_buffer_a = r_gpu_buffers.get(&ssbo_handles.debug_a).unwrap();
+        let debug_buffer_b = r_gpu_buffers.get(&ssbo_handles.debug_b).unwrap();
 
         let mut erosion_uniform_buffer = UniformBuffer::from(r_erosion_uniform_buffer.into_inner());
         erosion_uniform_buffer.write_buffer(&r_render_device, &r_queue);
@@ -443,8 +462,8 @@ impl ComputeShaderPipelinePlugin {
             UniformBuffer::from(r_deposition_uniform_buffer.into_inner());
         deposition_uniform_buffer.write_buffer(&r_render_device, &r_queue);
 
-        // let mut thermal_uniform_buffer = UniformBuffer::from(r_thermal_uniform_buffer.into_inner());
-        // thermal_uniform_buffer.write_buffer(&r_render_device, &r_queue);
+        let mut thermal_uniform_buffer = UniformBuffer::from(r_thermal_uniform_buffer.into_inner());
+        thermal_uniform_buffer.write_buffer(&r_render_device, &r_queue);
 
         let erosion_bind_group0 = r_render_device.create_bind_group(
             None,
@@ -454,7 +473,8 @@ impl ComputeShaderPipelinePlugin {
                 height_b_buffer.buffer.as_entire_buffer_binding(),
                 stream_a_buffer.buffer.as_entire_buffer_binding(),
                 stream_b_buffer.buffer.as_entire_buffer_binding(),
-                debug_buffer.buffer.as_entire_buffer_binding(),
+                debug_buffer_a.buffer.as_entire_buffer_binding(),
+                debug_buffer_b.buffer.as_entire_buffer_binding(),
                 &erosion_uniform_buffer,
             )),
         );
@@ -466,7 +486,8 @@ impl ComputeShaderPipelinePlugin {
                 height_a_buffer.buffer.as_entire_buffer_binding(),
                 stream_b_buffer.buffer.as_entire_buffer_binding(),
                 stream_a_buffer.buffer.as_entire_buffer_binding(),
-                debug_buffer.buffer.as_entire_buffer_binding(),
+                debug_buffer_b.buffer.as_entire_buffer_binding(),
+                debug_buffer_a.buffer.as_entire_buffer_binding(),
                 &erosion_uniform_buffer,
             )),
         );
@@ -481,7 +502,8 @@ impl ComputeShaderPipelinePlugin {
                 stream_b_buffer.buffer.as_entire_buffer_binding(),
                 sed_a_buffer.buffer.as_entire_buffer_binding(),
                 sed_b_buffer.buffer.as_entire_buffer_binding(),
-                debug_buffer.buffer.as_entire_buffer_binding(),
+                debug_buffer_a.buffer.as_entire_buffer_binding(),
+                debug_buffer_b.buffer.as_entire_buffer_binding(),
                 &deposition_uniform_buffer,
             )),
         );
@@ -495,35 +517,39 @@ impl ComputeShaderPipelinePlugin {
                 stream_a_buffer.buffer.as_entire_buffer_binding(),
                 sed_b_buffer.buffer.as_entire_buffer_binding(),
                 sed_a_buffer.buffer.as_entire_buffer_binding(),
-                debug_buffer.buffer.as_entire_buffer_binding(),
+                debug_buffer_b.buffer.as_entire_buffer_binding(),
+                debug_buffer_a.buffer.as_entire_buffer_binding(),
                 &deposition_uniform_buffer,
             )),
         );
 
-        // let thermal_bind_group0 = r_render_device.create_bind_group(
-        //     None,
-        //     &r_pipeline_cache.get_bind_group_layout(&r_pipeline.layout),
-        //     &BindGroupEntries::sequential((
-        //         height_a_buffer.buffer.as_entire_buffer_binding(),
-        //         height_b_buffer.buffer.as_entire_buffer_binding(),
-        //         debug_buffer.buffer.as_entire_buffer_binding(),
-        //         &thermal_uniform_buffer,
-        //     )),
-        // );
-        // let thermal_bind_group1 = r_render_device.create_bind_group(
-        //     None,
-        //     &r_pipeline_cache.get_bind_group_layout(&r_pipeline.layout),
-        //     &BindGroupEntries::sequential((
-        //         height_b_buffer.buffer.as_entire_buffer_binding(),
-        //         height_a_buffer.buffer.as_entire_buffer_binding(),
-        //         debug_buffer.buffer.as_entire_buffer_binding(),
-        //         &thermal_uniform_buffer,
-        //     )),
-        // );
+        let thermal_bind_group0 = r_render_device.create_bind_group(
+            None,
+            &r_pipeline_cache.get_bind_group_layout(&r_pipeline.thermal_layout),
+            &BindGroupEntries::sequential((
+                height_a_buffer.buffer.as_entire_buffer_binding(),
+                height_b_buffer.buffer.as_entire_buffer_binding(),
+                debug_buffer_a.buffer.as_entire_buffer_binding(),
+                debug_buffer_b.buffer.as_entire_buffer_binding(),
+                &thermal_uniform_buffer,
+            )),
+        );
+        let thermal_bind_group1 = r_render_device.create_bind_group(
+            None,
+            &r_pipeline_cache.get_bind_group_layout(&r_pipeline.thermal_layout),
+            &BindGroupEntries::sequential((
+                height_b_buffer.buffer.as_entire_buffer_binding(),
+                height_a_buffer.buffer.as_entire_buffer_binding(),
+                debug_buffer_b.buffer.as_entire_buffer_binding(),
+                debug_buffer_a.buffer.as_entire_buffer_binding(),
+                &thermal_uniform_buffer,
+            )),
+        );
 
         commands.insert_resource(ComputeBindGroups {
             erosion: [erosion_bind_group0, erosion_bind_group1],
             deposition: [deposition_bind_group0, deposition_bind_group1],
+            thermal: [thermal_bind_group0, thermal_bind_group1],
         });
     }
 }
@@ -549,6 +575,7 @@ impl render_graph::Node for ComputeNode {
             TerrainComputer::new(pipeline, compute_bind_groups, pipeline_cache, dispatch_size);
         let erosion_computer = ErosionComputer(&terrain_computer);
         let deposition_computer = DepositionComputer(&terrain_computer);
+        let thermal_computer = ThermalComputer(&terrain_computer);
 
         let mut pass =
             render_context
@@ -558,15 +585,22 @@ impl render_graph::Node for ComputeNode {
                     ..default()
                 });
 
-        for i in 0..2 {
-            let bind_group_index = i % 2;
-
-            // TODO: Debug if both shaders are run, only the second (deposition) result is taken into account
-            if terrain_config.run_erosion {
-                erosion_computer.compute(&mut pass, bind_group_index);
+        if terrain_config.run_erosion {
+            // TODO: Parameterize this loop count
+            for i in 0..100 {
+                erosion_computer.compute(&mut pass, i % 2);
             }
-            if terrain_config.run_deposition {
-                deposition_computer.compute(&mut pass, bind_group_index);
+        }
+        if terrain_config.run_deposition {
+            // TODO: Parameterize this loop count
+            for i in 0..20 {
+                deposition_computer.compute(&mut pass, i % 2);
+            }
+        }
+        if terrain_config.run_thermal {
+            // TODO: Parameterize this loop count
+            for i in 0..50 {
+                thermal_computer.compute(&mut pass, i % 2);
             }
         }
 
@@ -602,6 +636,8 @@ struct ErosionComputer<'a>(&'a TerrainComputer<'a>);
 
 #[derive(Deref)]
 struct DepositionComputer<'a>(&'a TerrainComputer<'a>);
+#[derive(Deref)]
+struct ThermalComputer<'a>(&'a TerrainComputer<'a>);
 
 impl<'a> TerrainComputer<'a> {
     fn new(
@@ -649,6 +685,21 @@ impl<'a> TerrainComputerShader for DepositionComputer<'a> {
             &[],
         );
         pass.set_pipeline(deposition_pipeline);
+        pass.dispatch_workgroups(self.dispatch_size, self.dispatch_size, 1);
+    }
+}
+
+impl<'a> TerrainComputerShader for ThermalComputer<'a> {
+    fn compute(&self, pass: &mut ComputePass, bind_group_index: usize) {
+        let Some(thermal_pipeline) = self
+            .pipeline_cache
+            .get_compute_pipeline(self.pipeline.thermal_pipeline)
+        else {
+            return;
+        };
+
+        pass.set_bind_group(0, &self.compute_bind_groups.thermal[bind_group_index], &[]);
+        pass.set_pipeline(thermal_pipeline);
         pass.dispatch_workgroups(self.dispatch_size, self.dispatch_size, 1);
     }
 }

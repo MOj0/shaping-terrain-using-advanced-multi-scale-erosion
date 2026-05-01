@@ -43,5 +43,5 @@ fn vertex(vertex: Vertex) -> VertexOutput {
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4(0.2 * (vec3(3.0) + 2.0 * in.normal), 1.0);
+    return vec4(0.2 * (vec3(2.5) + 3.0 * in.normal), 1.0);
 }

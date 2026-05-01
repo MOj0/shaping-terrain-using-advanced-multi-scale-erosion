@@ -7,9 +7,10 @@
 @group(0) @binding(4) var<storage, read_write> in_sed : array<f32>;
 @group(0) @binding(5) var<storage, read_write> out_sed : array<f32>;
 
-@group(0) @binding(6) var<storage, read_write> out_debug : array<f32>;
+@group(0) @binding(6) var<storage, read_write> in_debug : array<f32>;
+@group(0) @binding(7) var<storage, read_write> out_debug : array<f32>;
 
-@group(0) @binding(7) var<uniform> params: DepositionUniforms;
+@group(0) @binding(8) var<uniform> params: DepositionUniforms;
 
 
 struct DepositionUniforms {
@@ -204,8 +205,9 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
 
     sed += 0.1 * stream_power;
 
-    // write updated values
     out_terrain[id] = height;
     out_stream[id] = stream;
     out_sed[id] = sed;
+
+    // out_debug[id] = in_debug[id] - 1.0;
 }

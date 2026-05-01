@@ -4,9 +4,10 @@
 @group(0) @binding(2) var<storage, read_write> in_stream : array<f32>;
 @group(0) @binding(3) var<storage, read_write> out_stream : array<f32>;
 
-@group(0) @binding(4) var<storage, read_write> out_debug : array<f32>;
+@group(0) @binding(4) var<storage, read_write> in_debug : array<f32>;
+@group(0) @binding(5) var<storage, read_write> out_debug : array<f32>;
 
-@group(0) @binding(5) var<uniform> params: ErosionUniforms;
+@group(0) @binding(6) var<uniform> params: ErosionUniforms;
 
 
 struct ErosionUniforms {
@@ -158,5 +159,5 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     out_stream[id] = stream;
 
     /// DEBUG
-    out_debug[id] = f32(neighbor_direction[0] + 2 * neighbor_direction[1]);
+    // out_debug[id] = in_debug[id] + 1.0;
 }

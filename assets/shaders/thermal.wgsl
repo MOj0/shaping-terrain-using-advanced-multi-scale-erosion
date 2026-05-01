@@ -1,9 +1,10 @@
 @group(0) @binding(0) var<storage, read_write> in_terrain: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out_terrain : array<f32>;
 
-@group(0) @binding(2) var<storage, read_write> out_debug : array<f32>;
+@group(0) @binding(2) var<storage, read_write> in_debug : array<f32>;
+@group(0) @binding(3) var<storage, read_write> out_debug : array<f32>;
 
-@group(0) @binding(3) var<uniform> params: ThermalUniforms;
+@group(0) @binding(4) var<uniform> params: ThermalUniforms;
 
 
 struct ThermalUniforms {

@@ -50,6 +50,7 @@ impl Plugin for TerrainPlugin {
 pub struct TerrainConfig {
     pub run_erosion: bool,
     pub run_deposition: bool,
+    pub run_thermal: bool,
 }
 
 impl Default for TerrainConfig {
@@ -57,6 +58,7 @@ impl Default for TerrainConfig {
         Self {
             run_erosion: false,
             run_deposition: false,
+            run_thermal: false,
         }
     }
 }
@@ -133,8 +135,11 @@ fn init_terrain(
     //     .observe(print_output_stream_buffer::<'B'>);
 
     // commands
-    //     .spawn(Readback::buffer(r_buffer_handles.debug.clone()))
-    //     .observe(print_output_stream_buffer::<'D'>);
+    //     .spawn(Readback::buffer(r_buffer_handles.debug_a.clone()))
+    //     .observe(print_output_stream_buffer::<'1'>);
+    // commands
+    //     .spawn(Readback::buffer(r_buffer_handles.debug_b.clone()))
+    //     .observe(print_output_stream_buffer::<'2'>);
 
     commands
         .spawn(Readback::buffer(r_buffer_handles.vertex_positions.clone()))
@@ -267,9 +272,9 @@ fn print_output_stream_buffer<const BUFFER_IDENT: char>(
 
     // r_gpu_data.data = stream_data.clone();
     // TODO: Only do this in "debugging mode" (e.g. #cfg(debug  ), #cfg(debug_assertions)), basically a feature flag
-    // if BUFFER_IDENT == 'D' {
-    // r_file.data = stream_data.clone();
-    // }
+    if BUFFER_IDENT == 'D' {
+        r_gpu_data.data = stream_data.clone();
+    }
 
     info!(
         "{}: Buffer {:?}, min {}, max {}",
@@ -339,5 +344,8 @@ fn change_terrain_config(
     }
     if keyboard.just_pressed(KeyCode::KeyD) {
         r_terrain_config.run_deposition = !r_terrain_config.run_deposition;
+    }
+    if keyboard.just_pressed(KeyCode::KeyT) {
+        r_terrain_config.run_thermal = !r_terrain_config.run_thermal;
     }
 }
