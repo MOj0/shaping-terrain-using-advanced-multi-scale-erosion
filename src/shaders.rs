@@ -591,16 +591,16 @@ impl render_graph::Node for ComputeNode {
                 erosion_computer.compute(&mut pass, i % 2);
             }
         }
-        if terrain_config.run_deposition {
-            // TODO: Parameterize this loop count
-            for i in 0..20 {
-                deposition_computer.compute(&mut pass, i % 2);
-            }
-        }
         if terrain_config.run_thermal {
             // TODO: Parameterize this loop count
-            for i in 0..50 {
+            for i in 0..20 {
                 thermal_computer.compute(&mut pass, i % 2);
+            }
+        }
+        if terrain_config.run_deposition {
+            // TODO: Parameterize this loop count
+            for i in 0..50 {
+                deposition_computer.compute(&mut pass, i % 2);
             }
         }
 
