@@ -45,7 +45,7 @@ const RENDER_SHADER_PATH: &str = "shaders/terrain_render.wgsl";
 
 /// Size (width/height) of the texture
 /// TODO: This shouldn't be hardcoded
-const TEXTURE_SIZE: usize = 256;
+pub const TEXTURE_SIZE: usize = 512;
 
 /// Length of the buffer sent to the GPU
 const BUFFER_LEN: usize = TEXTURE_SIZE * TEXTURE_SIZE;

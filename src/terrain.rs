@@ -91,7 +91,7 @@ fn init_terrain(
 
     // TODO: Parameterize this somehow
     let height_scale = 3000.0; // Source: from the original size in C++ implementation
-    let width_scale = 20000.0 / 255.0; // Source: from the original size in C++ implementation: celldiagonal = Vector2((b[0] - a[0]) / (nx - 1), (b[1] - a[1]) / (ny - 1));
+    let width_scale = 20000.0 / crate::shaders::TEXTURE_SIZE as f32; // Source: from the original size in C++ implementation: celldiagonal = Vector2((b[0] - a[0]) / (nx - 1), (b[1] - a[1]) / (ny - 1));
 
     // Collect the values of the texture into a vector.
     // Range of heights is [0..1]
@@ -105,6 +105,11 @@ fn init_terrain(
     };
 
     let image_size = image.width() as usize;
+
+    // 2x upsampling
+    let heights = resize_heightmap(&heights, 256, 256, 512, 512);
+    let image_size = image_size * 2;
+
     let (positions, indices) = generate_terrain(heights.clone(), image_size, width_scale);
 
     // NOTE: Overwrite the existing dummy handles with ones pointing to the actual data
@@ -348,4 +353,50 @@ fn change_terrain_config(
     if keyboard.just_pressed(KeyCode::KeyT) {
         r_terrain_config.run_thermal = !r_terrain_config.run_thermal;
     }
+}
+
+fn sample_bilinear(heights: &[f32], width: usize, height: usize, x: f32, y: f32) -> f32 {
+    let x0 = x.floor() as usize;
+    let y0 = y.floor() as usize;
+
+    let x1 = (x0 + 1).min(width - 1);
+    let y1 = (y0 + 1).min(height - 1);
+
+    let tx = x - x0 as f32;
+    let ty = y - y0 as f32;
+
+    // Access values from flat array
+    let v00 = heights[y0 * width + x0];
+    let v10 = heights[y0 * width + x1];
+    let v01 = heights[y1 * width + x0];
+    let v11 = heights[y1 * width + x1];
+
+    // Bilinear interpolation
+    let a = v00 * (1.0 - tx) + v10 * tx;
+    let b = v01 * (1.0 - tx) + v11 * tx;
+
+    a * (1.0 - ty) + b * ty
+}
+
+fn resize_heightmap(
+    heights: &[f32],
+    old_width: usize,
+    old_height: usize,
+    new_width: usize,
+    new_height: usize,
+) -> Vec<f32> {
+    let mut result = vec![0.0; new_width * new_height];
+
+    for j in 0..new_height {
+        for i in 0..new_width {
+            // Map destination pixel into source space
+            let src_x = (i as f32 / (new_width - 1) as f32) * (old_width - 1) as f32;
+            let src_y = (j as f32 / (new_height - 1) as f32) * (old_height - 1) as f32;
+
+            result[j * new_width + i] =
+                sample_bilinear(heights, old_width, old_height, src_x, src_y);
+        }
+    }
+
+    result
 }
