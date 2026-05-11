@@ -28,6 +28,10 @@ impl Plugin for ShaderPlugin {
         )
         .add_systems(
             Update,
+            init_shader_resources.run_if(in_state(crate::AppState::InitShaderResources)),
+        )
+        .add_systems(
+            Update,
             change_erosion_uniform_resource.run_if(in_state(crate::AppState::Running)),
         );
     }
@@ -43,14 +47,8 @@ const COMPUTE_THERMAL_SHADER_PATH: &str = "shaders/thermal.wgsl";
 /// Path to the render shader
 const RENDER_SHADER_PATH: &str = "shaders/terrain_render.wgsl";
 
-/// Size (width/height) of the texture
-/// TODO: This shouldn't be hardcoded
-pub const DEFAULT_TEXTURE_SIZE: usize = 256;
-
-/// Length of the buffer sent to the GPU
-const DEFAULT_BUFFER_LEN: usize = DEFAULT_TEXTURE_SIZE * DEFAULT_TEXTURE_SIZE;
-
 //////////
+
 /// TODO: Figure out where to put these structs
 #[derive(Resource, ExtractResource, Clone, Deref)]
 pub struct ImageHandle(pub Handle<Image>);
@@ -103,8 +101,8 @@ pub struct ErosionUniforms {
 impl Default for ErosionUniforms {
     fn default() -> Self {
         Self {
-            nx: DEFAULT_TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
-            ny: DEFAULT_TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
+            nx: 0,                 //NOTE: This will be overwritten by the actual texture size
+            ny: 0,                 //NOTE: This will be overwritten by the actual texture size
             a: Vec2::ZERO, //NOTE: This will be overwritten by the actual corners of the grid
             b: Vec2::ONE,  //NOTE: This will be overwritten by the actual corners of the grid
             cell_size: Vec2::ZERO, // NOTE: This will be overwritten by the actual size of the cell
@@ -141,8 +139,8 @@ pub struct DepositionUniforms {
 impl Default for DepositionUniforms {
     fn default() -> Self {
         Self {
-            nx: DEFAULT_TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
-            ny: DEFAULT_TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
+            nx: 0,                 //NOTE: This will be overwritten by the actual texture size
+            ny: 0,                 //NOTE: This will be overwritten by the actual texture size
             a: Vec2::ZERO, //NOTE: This will be overwritten by the actual corners of the grid
             b: Vec2::ONE,  //NOTE: This will be overwritten by the actual corners of the grid
             cell_size: Vec2::ZERO, // NOTE: This will be overwritten by the actual size of the cell
@@ -181,8 +179,8 @@ pub struct ThermalUniforms {
 impl Default for ThermalUniforms {
     fn default() -> Self {
         Self {
-            nx: DEFAULT_TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
-            ny: DEFAULT_TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
+            nx: 0,                 //NOTE: This will be overwritten by the actual texture size
+            ny: 0,                 //NOTE: This will be overwritten by the actual texture size
             a: Vec2::ZERO, //NOTE: This will be overwritten by the actual corners of the grid
             b: Vec2::ONE,  //NOTE: This will be overwritten by the actual corners of the grid
             cell_size: Vec2::ZERO, // NOTE: This will be overwritten by the actual size of the cell
@@ -245,35 +243,17 @@ impl Material for TerrainMaterial {
     }
 }
 
+#[derive(Resource, Reflect, Clone, ExtractResource)]
+#[reflect(Resource)]
+pub struct ShaderConfig {
+    pub texture_size: usize,
+}
+
 /// Sets up everything related to shaders
-fn shader_setup(
-    mut commands: Commands,
-    mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
-    asset_server: Res<AssetServer>,
-) {
-    // Prepare SSBOs for the compute shader
-    commands.insert_resource(ComputeSSBOHandles {
-        height_a: prepare_ssbo(&mut buffers, vec![0.0; DEFAULT_BUFFER_LEN]),
-        height_b: prepare_ssbo(&mut buffers, vec![0.0; DEFAULT_BUFFER_LEN]),
-        stream_a: prepare_ssbo(&mut buffers, vec![0.0; DEFAULT_BUFFER_LEN]),
-        stream_b: prepare_ssbo(&mut buffers, vec![0.0; DEFAULT_BUFFER_LEN]),
-        sed_a: prepare_ssbo(&mut buffers, vec![0.0; DEFAULT_BUFFER_LEN]),
-        sed_b: prepare_ssbo(&mut buffers, vec![0.0; DEFAULT_BUFFER_LEN]),
-
-        debug_a: prepare_ssbo(&mut buffers, vec![0.0; DEFAULT_BUFFER_LEN]),
-        debug_b: prepare_ssbo(&mut buffers, vec![0.0; DEFAULT_BUFFER_LEN]),
-
-        vertex_positions: prepare_ssbo(&mut buffers, vec![Vec3::ZERO; DEFAULT_BUFFER_LEN]),
-    });
-
+fn shader_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     // Load in the heightfield texture
     let texture_handle: Handle<Image> = asset_server.load("heightfields/mountains.png");
     commands.insert_resource(ImageHandle(texture_handle));
-
-    // Insert the uniforms
-    commands.insert_resource(ErosionUniforms::default());
-    commands.insert_resource(DepositionUniforms::default());
-    commands.insert_resource(ThermalUniforms::default());
 }
 
 /// Waits until the texture asset is loaded and changes the app state
@@ -283,11 +263,48 @@ fn image_loaded_observer(
     mut s_next_app_state: ResMut<NextState<crate::AppState>>,
 ) {
     if images.get_mut(&image_handle.0).is_some() {
-        s_next_app_state.set(crate::AppState::GeneratingTerrain);
+        s_next_app_state.set(crate::AppState::InitShaderResources);
         info!("Texture loaded!");
     } else {
-        info!("image not yet loaded...");
+        info!("Texture not yet loaded...");
     }
+}
+
+fn init_shader_resources(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    image_handle: Res<ImageHandle>,
+    mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
+    mut s_next_app_state: ResMut<NextState<crate::AppState>>,
+) {
+    let Some(image) = images.get_mut(&image_handle.0) else {
+        error!("image not yet loaded...");
+        return;
+    };
+
+    assert_eq!(image.width(), image.height());
+    let texture_size = image.width() as usize;
+
+    commands.insert_resource(ShaderConfig { texture_size });
+
+    let buffer_size = texture_size * texture_size;
+
+    // Prepare SSBOs for the compute shader
+    commands.insert_resource(ComputeSSBOHandles {
+        height_a: prepare_ssbo(&mut buffers, vec![0.0; buffer_size]),
+        height_b: prepare_ssbo(&mut buffers, vec![0.0; buffer_size]),
+        stream_a: prepare_ssbo(&mut buffers, vec![0.0; buffer_size]),
+        stream_b: prepare_ssbo(&mut buffers, vec![0.0; buffer_size]),
+        sed_a: prepare_ssbo(&mut buffers, vec![0.0; buffer_size]),
+        sed_b: prepare_ssbo(&mut buffers, vec![0.0; buffer_size]),
+
+        debug_a: prepare_ssbo(&mut buffers, vec![0.0; buffer_size]),
+        debug_b: prepare_ssbo(&mut buffers, vec![0.0; buffer_size]),
+
+        vertex_positions: prepare_ssbo(&mut buffers, vec![Vec3::ZERO; buffer_size]),
+    });
+
+    s_next_app_state.set(crate::AppState::GeneratingTerrain);
 }
 
 fn change_erosion_uniform_resource(
@@ -312,6 +329,7 @@ impl Plugin for ComputeShaderPipelinePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             // NOTE: Extract all these resources from the Main World to the Render World
+            ExtractResourcePlugin::<ShaderConfig>::default(),
             ExtractResourcePlugin::<ComputeSSBOHandles>::default(),
             ExtractResourcePlugin::<ErosionUniforms>::default(),
             ExtractResourcePlugin::<DepositionUniforms>::default(),
@@ -438,12 +456,12 @@ impl ComputeShaderPipelinePlugin {
         r_pipeline: Res<ComputePipeline>,
         r_render_device: Res<RenderDevice>,
         r_pipeline_cache: Res<PipelineCache>,
-        ssbo_handles: Res<ComputeSSBOHandles>,
+        ssbo_handles: If<Res<ComputeSSBOHandles>>,
         r_gpu_buffers: Res<RenderAssets<GpuShaderStorageBuffer>>, // NOTE: GpuShaderStorageBuffer implements the RenderAsset trait
         r_queue: Res<RenderQueue>,
-        r_erosion_uniform_buffer: Res<ErosionUniforms>,
-        r_deposition_uniform_buffer: Res<DepositionUniforms>,
-        r_thermal_uniform_buffer: Res<ThermalUniforms>,
+        r_erosion_uniform_buffer: If<Res<ErosionUniforms>>,
+        r_deposition_uniform_buffer: If<Res<DepositionUniforms>>,
+        r_thermal_uniform_buffer: If<Res<ThermalUniforms>>,
     ) {
         // Get handles to the SSBOs from the ComputeSSBOHandles
         let height_a_buffer = r_gpu_buffers.get(&ssbo_handles.height_a).unwrap();
@@ -455,14 +473,16 @@ impl ComputeShaderPipelinePlugin {
         let debug_buffer_a = r_gpu_buffers.get(&ssbo_handles.debug_a).unwrap();
         let debug_buffer_b = r_gpu_buffers.get(&ssbo_handles.debug_b).unwrap();
 
-        let mut erosion_uniform_buffer = UniformBuffer::from(r_erosion_uniform_buffer.into_inner());
+        let mut erosion_uniform_buffer =
+            UniformBuffer::from(r_erosion_uniform_buffer.0.into_inner());
         erosion_uniform_buffer.write_buffer(&r_render_device, &r_queue);
 
         let mut deposition_uniform_buffer =
-            UniformBuffer::from(r_deposition_uniform_buffer.into_inner());
+            UniformBuffer::from(r_deposition_uniform_buffer.0.into_inner());
         deposition_uniform_buffer.write_buffer(&r_render_device, &r_queue);
 
-        let mut thermal_uniform_buffer = UniformBuffer::from(r_thermal_uniform_buffer.into_inner());
+        let mut thermal_uniform_buffer =
+            UniformBuffer::from(r_thermal_uniform_buffer.0.into_inner());
         thermal_uniform_buffer.write_buffer(&r_render_device, &r_queue);
 
         let erosion_bind_group0 = r_render_device.create_bind_group(
@@ -561,15 +581,29 @@ impl render_graph::Node for ComputeNode {
         render_context: &mut RenderContext<'w>,
         world: &'w World,
     ) -> Result<(), render_graph::NodeRunError> {
-        let compute_bind_groups = world.resource::<ComputeBindGroups>();
-        let pipeline_cache = world.resource::<PipelineCache>();
-        let pipeline = world.resource::<ComputePipeline>();
-
+        let Some(compute_bind_groups) = world.get_resource::<ComputeBindGroups>() else {
+            info!("Compute bind groups not loaded yet...");
+            return Ok(());
+        };
+        let Some(shader_config) = world.get_resource::<ShaderConfig>() else {
+            return Ok(());
+        };
         let Some(terrain_config) = world.get_resource::<crate::terrain::TerrainConfig>() else {
             return Ok(());
         };
 
-        let dispatch_size = (terrain_config.texture_size / 8) as u32;
+        // Don't run if uniforms are not initialized
+        if world.get_resource::<ErosionUniforms>().is_none()
+            || world.get_resource::<DepositionUniforms>().is_none()
+            || world.get_resource::<ThermalUniforms>().is_none()
+        {
+            return Ok(());
+        }
+
+        let pipeline_cache = world.resource::<PipelineCache>();
+        let pipeline = world.resource::<ComputePipeline>();
+
+        let dispatch_size = (shader_config.texture_size / 8) as u32;
 
         let terrain_computer =
             TerrainComputer::new(pipeline, compute_bind_groups, pipeline_cache, dispatch_size);

@@ -61,6 +61,7 @@ fn main() {
 pub enum AppState {
     #[default]
     LoadingAssets,
+    InitShaderResources,
     GeneratingTerrain,
     Running,
 }

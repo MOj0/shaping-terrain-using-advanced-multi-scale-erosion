@@ -20,7 +20,6 @@ impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GPUData>()
             .init_resource::<TerrainConfig>()
-            .init_resource::<TerrainHeight>()
             .add_systems(
                 Update,
                 init_terrain.run_if(in_state(crate::AppState::GeneratingTerrain)),
@@ -56,7 +55,6 @@ impl Plugin for TerrainPlugin {
 #[derive(Resource, Reflect, PartialEq, Clone, Debug, ExtractResource)]
 #[reflect(Resource)]
 pub struct TerrainConfig {
-    pub texture_size: usize,
     pub run_erosion: bool,
     pub run_deposition: bool,
     pub run_thermal: bool,
@@ -65,7 +63,6 @@ pub struct TerrainConfig {
 impl Default for TerrainConfig {
     fn default() -> Self {
         Self {
-            texture_size: crate::shaders::DEFAULT_TEXTURE_SIZE,
             run_erosion: false,
             run_deposition: false,
             run_thermal: false,
@@ -73,22 +70,11 @@ impl Default for TerrainConfig {
     }
 }
 
-#[derive(Resource, Reflect, Debug)]
-#[reflect(Resource)]
-pub struct TerrainHeight {
-    heights: Vec<f32>,
-}
-
-impl Default for TerrainHeight {
-    fn default() -> Self {
-        Self { heights: default() }
-    }
-}
-
 #[derive(Component)]
 struct Terrain;
 
 /// Helper resource used for deubgging purposes
+/// Also used for getting back heights from the GPU (currently used when upsampling)
 #[derive(Resource, Default, Reflect, Debug)]
 #[reflect(Resource)]
 struct GPUData {
@@ -97,16 +83,24 @@ struct GPUData {
     vertex_positions: Vec<Vec3>,
 }
 
+impl GPUData {
+    fn get_heights(&self) -> Vec<f32> {
+        self.vertex_positions
+            .iter()
+            .map(|vertex| vertex.y)
+            .collect()
+    }
+}
+
 // TODO: Split this function into 2. One should just compute the `heights` and set the resource. Other one should do the rest.
 fn init_terrain(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     image_handle: Res<shaders::ImageHandle>,
-    r_terrain_config: Res<TerrainConfig>,
-    mut r_terrain_height: ResMut<TerrainHeight>,
+    r_shader_config: Res<shaders::ShaderConfig>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<shaders::TerrainMaterial>>,
-    mut r_buffer_handles: ResMut<shaders::ComputeSSBOHandles>,
+    mut r_ssbo_handles: ResMut<shaders::ComputeSSBOHandles>,
     mut s_next_app_state: ResMut<NextState<crate::AppState>>,
     mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
 ) {
@@ -115,9 +109,7 @@ fn init_terrain(
         return;
     };
 
-    assert_eq!(image.width(), image.height());
-
-    let texture_size = r_terrain_config.texture_size;
+    let texture_size = r_shader_config.texture_size;
 
     // TODO: Parameterize this somehow
     let height_scale = 3000.0; // Source: from the original size in C++ implementation
@@ -134,26 +126,23 @@ fn init_terrain(
         None => panic!("whoops, no data"),
     };
 
-    // Store heights into the resource
-    r_terrain_height.heights = heights.clone();
+    let texture_size = r_shader_config.texture_size;
 
-    let image_size = image.width() as usize;
-
-    let (positions, indices) = generate_terrain(&heights, image_size, width_scale);
+    let (positions, indices) = generate_terrain(&heights, texture_size, width_scale);
 
     // NOTE: Overwrite the existing dummy handles with ones pointing to the actual data
-    r_buffer_handles.height_a = shaders::prepare_ssbo(&mut buffers, heights.clone());
+    r_ssbo_handles.height_a = shaders::prepare_ssbo(&mut buffers, heights.clone());
 
     // // Print data from the CPU for debugging
     // commands
-    //     .spawn(Readback::buffer(r_buffer_handles.height_a.clone()))
+    //     .spawn(Readback::buffer(r_ssbo_handles.height_a.clone()))
     //     .observe(|event: On<ReadbackComplete>| {
     //         let heights_a: Vec<f32> = event.to_shader_type();
     //         info!("A: Terrain [0..10] {:?}", &heights_a[0..10]);
     //     });
 
     // commands
-    //     .spawn(Readback::buffer(r_buffer_handles.height_b.clone()))
+    //     .spawn(Readback::buffer(r_ssbo_handles.height_b.clone()))
     //     .observe(|event: On<ReadbackComplete>| {
     //         let data: Vec<f32> = event.to_shader_type();
     //         info!("B: heights[0..10] {:?}", &data[0..10]);
@@ -161,28 +150,28 @@ fn init_terrain(
 
     // // TODO: stream_a is also the output buffer half the time
     // commands
-    //     .spawn(Readback::buffer(r_buffer_handles.stream_a.clone()))
+    //     .spawn(Readback::buffer(r_ssbo_handles.stream_a.clone()))
     //     .observe(print_output_stream_buffer::<'A'>);
 
     // commands
-    //     .spawn(Readback::buffer(r_buffer_handles.stream_b.clone()))
+    //     .spawn(Readback::buffer(r_ssbo_handles.stream_b.clone()))
     //     .observe(print_output_stream_buffer::<'B'>);
 
     // commands
-    //     .spawn(Readback::buffer(r_buffer_handles.debug_a.clone()))
+    //     .spawn(Readback::buffer(r_ssbo_handles.debug_a.clone()))
     //     .observe(print_output_stream_buffer::<'1'>);
     // commands
-    //     .spawn(Readback::buffer(r_buffer_handles.debug_b.clone()))
+    //     .spawn(Readback::buffer(r_ssbo_handles.debug_b.clone()))
     //     .observe(print_output_stream_buffer::<'2'>);
 
     commands
-        .spawn(Readback::buffer(r_buffer_handles.vertex_positions.clone()))
+        .spawn(Readback::buffer(r_ssbo_handles.vertex_positions.clone()))
         .observe(store_gpu_positions);
 
     // Create the custom material and add it to the materials assets
     let terrain_material_handle = materials.add(shaders::TerrainMaterial {
-        height_buffer_handle: r_buffer_handles.height_a.clone(),
-        positions_buffer_handle: r_buffer_handles.vertex_positions.clone(),
+        height_buffer_handle: r_ssbo_handles.height_a.clone(),
+        positions_buffer_handle: r_ssbo_handles.vertex_positions.clone(),
     });
 
     let mut terrain_mesh = Mesh::new(
@@ -205,33 +194,39 @@ fn init_terrain(
     // Overwrite the dummy default values for the uniforms
     // TODO: Make this nicer...
     let a = &positions[0];
-    let b = &positions[image_size * image_size - 1];
+    let b = &positions[texture_size * texture_size - 1];
     // NOTE: We take the `x` and `z` coordinate here, since that is what forms the surface of the grid, `y` is up
     let a = Vec2::new(a[0], a[2]);
     let b = Vec2::new(b[0], b[2]);
-    let cell_size = (b - a) / (image_size - 1) as f32;
+    let cell_size = (b - a) / (texture_size - 1) as f32;
 
     // NOTE: Overwrite the dummy parameters
     commands.insert_resource(shaders::ErosionUniforms {
+        nx: texture_size as i32,
+        ny: texture_size as i32,
         cell_size,
         a,
         b,
         ..default()
     });
     commands.insert_resource(shaders::DepositionUniforms {
+        nx: texture_size as i32,
+        ny: texture_size as i32,
         cell_size,
         a,
         b,
         ..default()
     });
     commands.insert_resource(shaders::ThermalUniforms {
+        nx: texture_size as i32,
+        ny: texture_size as i32,
         cell_size,
         a,
         b,
         ..default()
     });
 
-    info!(?cell_size, ?a, ?b, "updated params");
+    info!(?cell_size, ?a, ?b, "inserted uniforms");
 
     s_next_app_state.set(crate::AppState::Running);
 }
@@ -239,37 +234,42 @@ fn init_terrain(
 // FIXME: Fix bug where terrain moves when upsampled and there is a flickering wall on the side.
 fn upsample_terrain(
     s_terrain: Single<Entity, With<Terrain>>,
+    r_gpu_data: Res<GPUData>,
     mut commands: Commands,
-    mut r_terrain_config: ResMut<TerrainConfig>,
-    mut r_terrain_height: ResMut<TerrainHeight>,
+    mut r_shader_config: ResMut<shaders::ShaderConfig>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<shaders::TerrainMaterial>>,
     mut r_buffer_handles: ResMut<shaders::ComputeSSBOHandles>,
     mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
 ) {
-    let old_heights = &r_terrain_height.heights;
-    let size = r_terrain_config.texture_size;
+    let old_heights = &r_gpu_data.get_heights();
+    let texture_size = r_shader_config.texture_size;
+
+    // let _ = write_vec_to_file("old_heights.txt", old_heights);
 
     // 2x upsampling
-    let double_size = size * 2;
-    let heights = resize_heightmap(old_heights, size, double_size);
+    let double_size = texture_size * 2;
+    let heights = resize_heightmap(old_heights, texture_size, double_size);
+
+    // let _ = write_vec_to_file("heights.txt", &heights);
 
     let width_scale = 20000.0 / (double_size - 1) as f32; // Source: from the original size in C++ implementation: celldiagonal = Vector2((b[0] - a[0]) / (nx - 1), (b[1] - a[1]) / (ny - 1));
     let (positions, indices) = generate_terrain(&heights, double_size, width_scale);
 
-    // NOTE: Overwrite the existing dummy handle with one pointing to the actual data
+    // NOTE: Overwrite the existing handle with one pointing to updated data
     r_buffer_handles.height_a = shaders::prepare_ssbo(&mut buffers, heights.clone());
 
-    // Reinitialize buffers with new length
-    r_buffer_handles.height_b = shaders::prepare_ssbo(&mut buffers, vec![0.0; heights.len()]);
-    r_buffer_handles.stream_a = shaders::prepare_ssbo(&mut buffers, vec![0.0; heights.len()]);
-    r_buffer_handles.stream_b = shaders::prepare_ssbo(&mut buffers, vec![0.0; heights.len()]);
-    r_buffer_handles.sed_a = shaders::prepare_ssbo(&mut buffers, vec![0.0; heights.len()]);
-    r_buffer_handles.sed_b = shaders::prepare_ssbo(&mut buffers, vec![0.0; heights.len()]);
-    r_buffer_handles.debug_a = shaders::prepare_ssbo(&mut buffers, vec![0.0; heights.len()]);
-    r_buffer_handles.debug_b = shaders::prepare_ssbo(&mut buffers, vec![0.0; heights.len()]);
+    // Reinitialize buffers with new size
+    let buffer_size = double_size * double_size;
+    r_buffer_handles.height_b = shaders::prepare_ssbo(&mut buffers, vec![0.0; buffer_size]);
+    r_buffer_handles.stream_a = shaders::prepare_ssbo(&mut buffers, vec![0.0; buffer_size]);
+    r_buffer_handles.stream_b = shaders::prepare_ssbo(&mut buffers, vec![0.0; buffer_size]);
+    r_buffer_handles.sed_a = shaders::prepare_ssbo(&mut buffers, vec![0.0; buffer_size]);
+    r_buffer_handles.sed_b = shaders::prepare_ssbo(&mut buffers, vec![0.0; buffer_size]);
+    r_buffer_handles.debug_a = shaders::prepare_ssbo(&mut buffers, vec![0.0; buffer_size]);
+    r_buffer_handles.debug_b = shaders::prepare_ssbo(&mut buffers, vec![0.0; buffer_size]);
     r_buffer_handles.vertex_positions =
-        shaders::prepare_ssbo(&mut buffers, vec![Vec3::ZERO; heights.len()]);
+        shaders::prepare_ssbo(&mut buffers, vec![Vec3::ZERO; buffer_size]);
 
     // Override the observer
     commands
@@ -330,10 +330,9 @@ fn upsample_terrain(
         ..default()
     });
 
-    r_terrain_config.texture_size = double_size;
-    r_terrain_height.heights = heights;
+    r_shader_config.texture_size = double_size;
 
-    info!(?cell_size, ?a, ?b, "updated params");
+    info!(?cell_size, ?a, ?b, "updated uniforms");
 }
 
 fn generate_terrain(
@@ -421,14 +420,7 @@ fn store_gpu_positions(event: On<ReadbackComplete>, mut r_gpu_data: ResMut<GPUDa
 }
 
 fn write_res_data_to_file(r: Res<GPUData>) -> Result {
-    let file = File::create("debug_buffer.txt")?;
-    let mut writer = BufWriter::new(file);
-
-    for value in &r.data {
-        writeln!(writer, "{}", value)?;
-    }
-
-    Ok(())
+    write_vec_to_file("debug_buffer.txt", &r.data)
 }
 
 /// Synchronizes the positions read from the GPU onto the CPU
@@ -502,15 +494,26 @@ fn sample_bilinear(heights: &[f32], size: usize, x: f32, y: f32) -> f32 {
 fn resize_heightmap(heights: &[f32], old_size: usize, new_size: usize) -> Vec<f32> {
     let mut result = vec![0.0; new_size * new_size];
 
-    for j in 0..new_size {
-        for i in 0..new_size {
+    for y in 0..new_size {
+        for x in 0..new_size {
             // Map destination pixel into source space
-            let src_x = (i as f32 / (new_size - 1) as f32) * (old_size - 1) as f32;
-            let src_y = (j as f32 / (new_size - 1) as f32) * (old_size - 1) as f32;
+            let src_x = (x as f32 / (new_size - 1) as f32) * (old_size - 1) as f32;
+            let src_y = (y as f32 / (new_size - 1) as f32) * (old_size - 1) as f32;
 
-            result[j * new_size + i] = sample_bilinear(heights, old_size, src_x, src_y);
+            result[y * new_size + x] = sample_bilinear(heights, old_size, src_x, src_y);
         }
     }
 
     result
+}
+
+fn write_vec_to_file<T: std::fmt::Display>(filename: &str, vec: &Vec<T>) -> Result {
+    let file = File::create(filename)?;
+    let mut writer = BufWriter::new(file);
+
+    for value in vec {
+        writeln!(writer, "{}", value)?;
+    }
+
+    Ok(())
 }
