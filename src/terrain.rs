@@ -9,6 +9,7 @@ use bevy::{
     render::render_resource::*,
     render::storage::ShaderStorageBuffer,
 };
+use rand::RngExt;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
@@ -29,6 +30,13 @@ impl Plugin for TerrainPlugin {
                 upsample_terrain.run_if(
                     in_state(crate::AppState::Running)
                         .and(common_conditions::input_just_pressed(KeyCode::KeyU)),
+                ),
+            )
+            .add_systems(
+                Update,
+                change_terrain.run_if(
+                    in_state(crate::AppState::Running)
+                        .and(common_conditions::input_just_pressed(KeyCode::KeyG)),
                 ),
             )
             .add_systems(
@@ -79,7 +87,7 @@ struct Terrain;
 #[reflect(Resource)]
 struct GPUData {
     written_to_file: bool,
-    data: Vec<f32>,
+    debug_data: Vec<f32>,
     vertex_positions: Vec<Vec3>,
 }
 
@@ -101,8 +109,8 @@ fn init_terrain(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<shaders::TerrainMaterial>>,
     mut r_ssbo_handles: ResMut<shaders::ComputeSSBOHandles>,
-    mut s_next_app_state: ResMut<NextState<crate::AppState>>,
     mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
+    mut s_next_app_state: ResMut<NextState<crate::AppState>>,
 ) {
     let Some(image) = images.get_mut(&image_handle.0) else {
         error!("image not yet loaded...");
@@ -125,8 +133,6 @@ fn init_terrain(
             .collect(),
         None => panic!("whoops, no data"),
     };
-
-    let texture_size = r_shader_config.texture_size;
 
     let (positions, indices) = generate_terrain(&heights, texture_size, width_scale);
 
@@ -185,7 +191,7 @@ fn init_terrain(
     // Spawn the terrain
     commands.spawn((
         Terrain,
-        Name::new("plane"),
+        Name::new("terrain"),
         Mesh3d(meshes.add(terrain_mesh)),
         MeshMaterial3d(terrain_material_handle.clone()),
         Transform::default(),
@@ -200,7 +206,7 @@ fn init_terrain(
     let b = Vec2::new(b[0], b[2]);
     let cell_size = (b - a) / (texture_size - 1) as f32;
 
-    // NOTE: Overwrite the dummy parameters
+    // Insert uniforms
     commands.insert_resource(shaders::ErosionUniforms {
         nx: texture_size as i32,
         ny: texture_size as i32,
@@ -335,6 +341,58 @@ fn upsample_terrain(
     info!(?cell_size, ?a, ?b, "updated uniforms");
 }
 
+fn change_terrain(
+    s_terrain: Single<Entity, With<Terrain>>,
+    mut commands: Commands,
+    r_shader_config: Res<shaders::ShaderConfig>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<shaders::TerrainMaterial>>,
+    mut r_ssbo_handles: ResMut<shaders::ComputeSSBOHandles>,
+    mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
+) {
+    let texture_size = r_shader_config.texture_size;
+    let width_scale = 20000.0 / (texture_size - 1) as f32; // Source: from the original size in C++ implementation: celldiagonal = Vector2((b[0] - a[0]) / (nx - 1), (b[1] - a[1]) / (ny - 1));
+
+    let heights = generate_dummy_heights(texture_size);
+    let (positions, indices) = generate_terrain(&heights, texture_size, width_scale);
+
+    // NOTE: Overwrite ssbo handle with the one pointing to the new data
+    r_ssbo_handles.height_a = shaders::prepare_ssbo(&mut buffers, heights.clone());
+
+    // Reset the rest of SSBO resource
+    let buffer_size = heights.len();
+    r_ssbo_handles.height_b = shaders::prepare_ssbo(&mut buffers, vec![0.0; buffer_size]);
+    r_ssbo_handles.stream_a = shaders::prepare_ssbo(&mut buffers, vec![0.0; buffer_size]);
+    r_ssbo_handles.stream_b = shaders::prepare_ssbo(&mut buffers, vec![0.0; buffer_size]);
+    r_ssbo_handles.sed_a = shaders::prepare_ssbo(&mut buffers, vec![0.0; buffer_size]);
+    r_ssbo_handles.sed_b = shaders::prepare_ssbo(&mut buffers, vec![0.0; buffer_size]);
+    r_ssbo_handles.debug_a = shaders::prepare_ssbo(&mut buffers, vec![0.0; buffer_size]);
+    r_ssbo_handles.debug_b = shaders::prepare_ssbo(&mut buffers, vec![0.0; buffer_size]);
+
+    // NOTE: We should NOT override the vertex_positions because GPU might be writing into it. Causes weird bugs...
+    // r_ssbo_handles.vertex_positions =
+    //     shaders::prepare_ssbo(&mut buffers, vec![Vec3::ZERO; buffer_size]);
+
+    // Create the custom material and add it to the materials assets
+    let terrain_material_handle = materials.add(shaders::TerrainMaterial {
+        height_buffer_handle: r_ssbo_handles.height_a.clone(),
+        positions_buffer_handle: r_ssbo_handles.vertex_positions.clone(),
+    });
+
+    let mut terrain_mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
+    terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions.clone());
+    terrain_mesh.insert_indices(Indices::U32(indices));
+    terrain_mesh.compute_normals();
+
+    commands.entity(s_terrain.into_inner()).insert((
+        Mesh3d(meshes.add(terrain_mesh)),
+        MeshMaterial3d(terrain_material_handle.clone()),
+    ));
+}
+
 fn generate_terrain(
     height_data: &Vec<f32>,
     size: usize,
@@ -378,6 +436,21 @@ fn generate_terrain(
     (positions, indices)
 }
 
+fn generate_dummy_heights(size: usize) -> Vec<f32> {
+    let mut heights = vec![0.0; size * size];
+    let mut rng = rand::rng();
+
+    // Generate vertices
+    for z in 0..size {
+        for x in 0..size {
+            let i = z * size + x;
+            heights[i] = rng.random_range(300.0..1000.0);
+        }
+    }
+
+    heights
+}
+
 /// Prints the stream buffer read from the GPU
 /// TODO: The output (e.g. out_stream) buffer changes each frame, so we should make some logic to only print the actual output buffer
 fn print_output_stream_buffer<const BUFFER_IDENT: char>(
@@ -398,7 +471,7 @@ fn print_output_stream_buffer<const BUFFER_IDENT: char>(
     // r_gpu_data.data = stream_data.clone();
     // TODO: Only do this in "debugging mode" (e.g. #cfg(debug  ), #cfg(debug_assertions)), basically a feature flag
     if BUFFER_IDENT == 'D' {
-        r_gpu_data.data = stream_data.clone();
+        r_gpu_data.debug_data = stream_data.clone();
     }
 
     info!(
@@ -415,12 +488,12 @@ fn print_output_stream_buffer<const BUFFER_IDENT: char>(
 }
 
 fn store_gpu_positions(event: On<ReadbackComplete>, mut r_gpu_data: ResMut<GPUData>) {
-    let stream_data: Vec<Vec3> = event.to_shader_type();
-    r_gpu_data.vertex_positions = stream_data.clone();
+    let gpu_event_data: Vec<Vec3> = event.to_shader_type();
+    r_gpu_data.vertex_positions = gpu_event_data.clone();
 }
 
 fn write_res_data_to_file(r: Res<GPUData>) -> Result {
-    write_vec_to_file("debug_buffer.txt", &r.data)
+    write_vec_to_file("debug_buffer.txt", &r.debug_data)
 }
 
 /// Synchronizes the positions read from the GPU onto the CPU
