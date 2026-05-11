@@ -45,10 +45,10 @@ const RENDER_SHADER_PATH: &str = "shaders/terrain_render.wgsl";
 
 /// Size (width/height) of the texture
 /// TODO: This shouldn't be hardcoded
-pub const TEXTURE_SIZE: usize = 512;
+pub const DEFAULT_TEXTURE_SIZE: usize = 256;
 
 /// Length of the buffer sent to the GPU
-const BUFFER_LEN: usize = TEXTURE_SIZE * TEXTURE_SIZE;
+const DEFAULT_BUFFER_LEN: usize = DEFAULT_TEXTURE_SIZE * DEFAULT_TEXTURE_SIZE;
 
 //////////
 /// TODO: Figure out where to put these structs
@@ -103,8 +103,8 @@ pub struct ErosionUniforms {
 impl Default for ErosionUniforms {
     fn default() -> Self {
         Self {
-            nx: TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
-            ny: TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
+            nx: DEFAULT_TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
+            ny: DEFAULT_TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
             a: Vec2::ZERO, //NOTE: This will be overwritten by the actual corners of the grid
             b: Vec2::ONE,  //NOTE: This will be overwritten by the actual corners of the grid
             cell_size: Vec2::ZERO, // NOTE: This will be overwritten by the actual size of the cell
@@ -141,8 +141,8 @@ pub struct DepositionUniforms {
 impl Default for DepositionUniforms {
     fn default() -> Self {
         Self {
-            nx: TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
-            ny: TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
+            nx: DEFAULT_TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
+            ny: DEFAULT_TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
             a: Vec2::ZERO, //NOTE: This will be overwritten by the actual corners of the grid
             b: Vec2::ONE,  //NOTE: This will be overwritten by the actual corners of the grid
             cell_size: Vec2::ZERO, // NOTE: This will be overwritten by the actual size of the cell
@@ -181,8 +181,8 @@ pub struct ThermalUniforms {
 impl Default for ThermalUniforms {
     fn default() -> Self {
         Self {
-            nx: TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
-            ny: TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
+            nx: DEFAULT_TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
+            ny: DEFAULT_TEXTURE_SIZE as i32, // TODO: Should probably not be hardcoded
             a: Vec2::ZERO, //NOTE: This will be overwritten by the actual corners of the grid
             b: Vec2::ONE,  //NOTE: This will be overwritten by the actual corners of the grid
             cell_size: Vec2::ZERO, // NOTE: This will be overwritten by the actual size of the cell
@@ -253,17 +253,17 @@ fn shader_setup(
 ) {
     // Prepare SSBOs for the compute shader
     commands.insert_resource(ComputeSSBOHandles {
-        height_a: prepare_ssbo(&mut buffers, vec![0.0; BUFFER_LEN]),
-        height_b: prepare_ssbo(&mut buffers, vec![0.0; BUFFER_LEN]),
-        stream_a: prepare_ssbo(&mut buffers, vec![0.0; BUFFER_LEN]),
-        stream_b: prepare_ssbo(&mut buffers, vec![0.0; BUFFER_LEN]),
-        sed_a: prepare_ssbo(&mut buffers, vec![0.0; BUFFER_LEN]),
-        sed_b: prepare_ssbo(&mut buffers, vec![0.0; BUFFER_LEN]),
+        height_a: prepare_ssbo(&mut buffers, vec![0.0; DEFAULT_BUFFER_LEN]),
+        height_b: prepare_ssbo(&mut buffers, vec![0.0; DEFAULT_BUFFER_LEN]),
+        stream_a: prepare_ssbo(&mut buffers, vec![0.0; DEFAULT_BUFFER_LEN]),
+        stream_b: prepare_ssbo(&mut buffers, vec![0.0; DEFAULT_BUFFER_LEN]),
+        sed_a: prepare_ssbo(&mut buffers, vec![0.0; DEFAULT_BUFFER_LEN]),
+        sed_b: prepare_ssbo(&mut buffers, vec![0.0; DEFAULT_BUFFER_LEN]),
 
-        debug_a: prepare_ssbo(&mut buffers, vec![0.0; BUFFER_LEN]),
-        debug_b: prepare_ssbo(&mut buffers, vec![0.0; BUFFER_LEN]),
+        debug_a: prepare_ssbo(&mut buffers, vec![0.0; DEFAULT_BUFFER_LEN]),
+        debug_b: prepare_ssbo(&mut buffers, vec![0.0; DEFAULT_BUFFER_LEN]),
 
-        vertex_positions: prepare_ssbo(&mut buffers, vec![Vec3::ZERO; BUFFER_LEN]),
+        vertex_positions: prepare_ssbo(&mut buffers, vec![Vec3::ZERO; DEFAULT_BUFFER_LEN]),
     });
 
     // Load in the heightfield texture
@@ -569,7 +569,7 @@ impl render_graph::Node for ComputeNode {
             return Ok(());
         };
 
-        let dispatch_size = (TEXTURE_SIZE / 8) as u32;
+        let dispatch_size = (terrain_config.texture_size / 8) as u32;
 
         let terrain_computer =
             TerrainComputer::new(pipeline, compute_bind_groups, pipeline_cache, dispatch_size);
