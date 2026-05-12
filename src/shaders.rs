@@ -1,4 +1,5 @@
 use bevy::{
+    input::common_conditions,
     prelude::*,
     render::{
         Render, RenderApp, RenderStartup, RenderSystems,
@@ -12,6 +13,9 @@ use bevy::{
     },
     shader::ShaderRef,
 };
+
+// NOTE: To upscale the terrain: UpArrow + I
+// NOTE: To upscale the terrain: I + UpArrow + R + I
 
 pub struct ShaderPlugin;
 
@@ -33,6 +37,14 @@ impl Plugin for ShaderPlugin {
         .add_systems(
             Update,
             change_erosion_uniform_resource.run_if(in_state(crate::AppState::Running)),
+        )
+        .add_systems(Update, scale_shader_config)
+        .add_systems(
+            Update,
+            toggle_compute_pipeline.run_if(
+                in_state(crate::AppState::Running)
+                    .and(common_conditions::input_just_pressed(KeyCode::KeyC)),
+            ),
         );
     }
 }
@@ -246,7 +258,12 @@ impl Material for TerrainMaterial {
 #[derive(Resource, Reflect, Clone, ExtractResource)]
 #[reflect(Resource)]
 pub struct ShaderConfig {
+    pub run_compute: bool,
     pub texture_size: usize,
+}
+
+fn toggle_compute_pipeline(mut r_shader_config: ResMut<ShaderConfig>) {
+    r_shader_config.run_compute = !r_shader_config.run_compute;
 }
 
 /// Sets up everything related to shaders
@@ -258,36 +275,36 @@ fn shader_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
 
 /// Waits until the texture asset is loaded and changes the app state
 fn image_loaded_observer(
+    mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     image_handle: Res<ImageHandle>,
     mut s_next_app_state: ResMut<NextState<crate::AppState>>,
 ) {
-    if images.get_mut(&image_handle.0).is_some() {
+    if let Some(image) = images.get_mut(&image_handle.0) {
+        assert_eq!(image.width(), image.height());
+
+        let texture_size = image.width() as usize;
+        commands.insert_resource(ShaderConfig {
+            run_compute: true,
+            texture_size,
+        });
+
         s_next_app_state.set(crate::AppState::InitShaderResources);
         info!("Texture loaded!");
     } else {
         info!("Texture not yet loaded...");
-    }
+    };
 }
 
 fn init_shader_resources(
     mut commands: Commands,
-    mut images: ResMut<Assets<Image>>,
-    image_handle: Res<ImageHandle>,
+    r_shader_config: Res<ShaderConfig>,
     mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
     mut s_next_app_state: ResMut<NextState<crate::AppState>>,
 ) {
-    let Some(image) = images.get_mut(&image_handle.0) else {
-        error!("image not yet loaded...");
-        return;
-    };
+    let buffer_size = r_shader_config.texture_size * r_shader_config.texture_size;
 
-    assert_eq!(image.width(), image.height());
-    let texture_size = image.width() as usize;
-
-    commands.insert_resource(ShaderConfig { texture_size });
-
-    let buffer_size = texture_size * texture_size;
+    info!("buffer_size: {}", buffer_size);
 
     // Prepare SSBOs for the compute shader
     commands.insert_resource(ComputeSSBOHandles {
@@ -305,6 +322,18 @@ fn init_shader_resources(
     });
 
     s_next_app_state.set(crate::AppState::GeneratingTerrain);
+}
+
+fn scale_shader_config(
+    mut r_shader_config: If<ResMut<ShaderConfig>>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+) {
+    if keyboard.just_pressed(KeyCode::ArrowUp) {
+        r_shader_config.texture_size *= 2;
+    }
+    if keyboard.just_pressed(KeyCode::ArrowDown) {
+        r_shader_config.texture_size /= 2;
+    }
 }
 
 fn change_erosion_uniform_resource(
@@ -582,7 +611,6 @@ impl render_graph::Node for ComputeNode {
         world: &'w World,
     ) -> Result<(), render_graph::NodeRunError> {
         let Some(compute_bind_groups) = world.get_resource::<ComputeBindGroups>() else {
-            info!("Compute bind groups not loaded yet...");
             return Ok(());
         };
         let Some(shader_config) = world.get_resource::<ShaderConfig>() else {
@@ -597,6 +625,10 @@ impl render_graph::Node for ComputeNode {
             || world.get_resource::<DepositionUniforms>().is_none()
             || world.get_resource::<ThermalUniforms>().is_none()
         {
+            return Ok(());
+        }
+
+        if !shader_config.run_compute {
             return Ok(());
         }
 

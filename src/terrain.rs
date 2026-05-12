@@ -23,7 +23,14 @@ impl Plugin for TerrainPlugin {
             .init_resource::<TerrainConfig>()
             .add_systems(
                 Update,
-                init_terrain.run_if(in_state(crate::AppState::GeneratingTerrain)),
+                init_terrain.run_if(
+                    in_state(crate::AppState::GeneratingTerrain)
+                        .and(common_conditions::input_just_pressed(KeyCode::KeyI)),
+                ),
+            )
+            .add_systems(
+                Update,
+                reset_terrain.run_if(common_conditions::input_just_pressed(KeyCode::KeyR)),
             )
             .add_systems(
                 Update,
@@ -100,6 +107,27 @@ impl GPUData {
     }
 }
 
+fn reset_terrain(
+    mut commands: Commands,
+    q_readbacks: Query<Entity, With<Readback>>,
+    s_terrain: Single<Entity, With<Terrain>>,
+    mut s_next_app_state: ResMut<NextState<crate::AppState>>,
+) {
+    commands.remove_resource::<shaders::ComputeSSBOHandles>();
+
+    commands.remove_resource::<shaders::ErosionUniforms>();
+    commands.remove_resource::<shaders::DepositionUniforms>();
+    commands.remove_resource::<shaders::ThermalUniforms>();
+
+    for readback in &q_readbacks {
+        commands.entity(readback).despawn();
+    }
+
+    commands.entity(s_terrain.into_inner()).despawn();
+
+    s_next_app_state.set(crate::AppState::InitShaderResources);
+}
+
 // TODO: Split this function into 2. One should just compute the `heights` and set the resource. Other one should do the rest.
 fn init_terrain(
     mut commands: Commands,
@@ -117,15 +145,11 @@ fn init_terrain(
         return;
     };
 
-    let texture_size = r_shader_config.texture_size;
-
-    // TODO: Parameterize this somehow
     let height_scale = 3000.0; // Source: from the original size in C++ implementation
-    let width_scale = 20000.0 / (texture_size - 1) as f32; // Source: from the original size in C++ implementation: celldiagonal = Vector2((b[0] - a[0]) / (nx - 1), (b[1] - a[1]) / (ny - 1));
 
     // Collect the values of the texture into a vector.
     // Range of heights is [0..1]
-    let heights: Vec<f32> = match &image.data {
+    let mut heights: Vec<f32> = match &image.data {
         Some(data) => data
             .iter()
             .step_by(4)
@@ -133,6 +157,17 @@ fn init_terrain(
             .collect(),
         None => panic!("whoops, no data"),
     };
+
+    let mut texture_size = image.width() as usize;
+    let target_size = r_shader_config.texture_size;
+    // Perform upsampling if neccessary
+    if target_size != texture_size {
+        heights = resize_heightmap(&heights, texture_size, target_size);
+        texture_size = target_size;
+    }
+
+    // TODO: Parameterize this somehow
+    let width_scale = 20000.0 / (texture_size - 1) as f32; // Source: from the original size in C++ implementation: celldiagonal = Vector2((b[0] - a[0]) / (nx - 1), (b[1] - a[1]) / (ny - 1));
 
     let (positions, indices) = generate_terrain(&heights, texture_size, width_scale);
 
@@ -262,7 +297,7 @@ fn upsample_terrain(
     let width_scale = 20000.0 / (double_size - 1) as f32; // Source: from the original size in C++ implementation: celldiagonal = Vector2((b[0] - a[0]) / (nx - 1), (b[1] - a[1]) / (ny - 1));
     let (positions, indices) = generate_terrain(&heights, double_size, width_scale);
 
-    // NOTE: Overwrite the existing handle with one pointing to updated data
+    // NOTE: Overwrite the existing handle with the one pointing to updated data
     r_buffer_handles.height_a = shaders::prepare_ssbo(&mut buffers, heights.clone());
 
     // Reinitialize buffers with new size
