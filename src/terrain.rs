@@ -35,7 +35,7 @@ impl Plugin for TerrainPlugin {
                 Update,
                 change_terrain.run_if(
                     in_state(crate::AppState::Running)
-                        .and(common_conditions::input_just_pressed(KeyCode::KeyC)),
+                        .and(common_conditions::input_just_pressed(KeyCode::KeyG)),
                 ),
             )
             .add_systems(
