@@ -14,9 +14,6 @@ use bevy::{
     shader::ShaderRef,
 };
 
-// NOTE: To upscale the terrain: UpArrow + I
-// NOTE: To upscale the terrain: I + UpArrow + R + I
-
 pub struct ShaderPlugin;
 
 impl Plugin for ShaderPlugin {
@@ -38,7 +35,6 @@ impl Plugin for ShaderPlugin {
             Update,
             change_erosion_uniform_resource.run_if(in_state(crate::AppState::Running)),
         )
-        .add_systems(Update, scale_shader_config)
         .add_systems(
             Update,
             toggle_compute_pipeline.run_if(
@@ -322,18 +318,6 @@ fn init_shader_resources(
     });
 
     s_next_app_state.set(crate::AppState::GeneratingTerrain);
-}
-
-fn scale_shader_config(
-    mut r_shader_config: If<ResMut<ShaderConfig>>,
-    keyboard: Res<ButtonInput<KeyCode>>,
-) {
-    if keyboard.just_pressed(KeyCode::ArrowUp) {
-        r_shader_config.texture_size *= 2;
-    }
-    if keyboard.just_pressed(KeyCode::ArrowDown) {
-        r_shader_config.texture_size /= 2;
-    }
 }
 
 fn change_erosion_uniform_resource(

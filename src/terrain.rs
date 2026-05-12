@@ -23,27 +23,19 @@ impl Plugin for TerrainPlugin {
             .init_resource::<TerrainConfig>()
             .add_systems(
                 Update,
-                init_terrain.run_if(
-                    in_state(crate::AppState::GeneratingTerrain)
-                        .and(common_conditions::input_just_pressed(KeyCode::KeyI)),
-                ),
+                init_terrain.run_if(in_state(crate::AppState::GeneratingTerrain)),
             )
             .add_systems(
                 Update,
-                reset_terrain.run_if(common_conditions::input_just_pressed(KeyCode::KeyR)),
-            )
-            .add_systems(
-                Update,
-                upsample_terrain.run_if(
-                    in_state(crate::AppState::Running)
-                        .and(common_conditions::input_just_pressed(KeyCode::KeyU)),
-                ),
+                (upscale_texture_size, reset_terrain)
+                    .chain()
+                    .run_if(common_conditions::input_just_pressed(KeyCode::KeyU)),
             )
             .add_systems(
                 Update,
                 change_terrain.run_if(
                     in_state(crate::AppState::Running)
-                        .and(common_conditions::input_just_pressed(KeyCode::KeyG)),
+                        .and(common_conditions::input_just_pressed(KeyCode::KeyC)),
                 ),
             )
             .add_systems(
@@ -272,110 +264,6 @@ fn init_terrain(
     s_next_app_state.set(crate::AppState::Running);
 }
 
-// FIXME: Fix bug where terrain moves when upsampled and there is a flickering wall on the side.
-fn upsample_terrain(
-    s_terrain: Single<Entity, With<Terrain>>,
-    r_gpu_data: Res<GPUData>,
-    mut commands: Commands,
-    mut r_shader_config: ResMut<shaders::ShaderConfig>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<shaders::TerrainMaterial>>,
-    mut r_buffer_handles: ResMut<shaders::ComputeSSBOHandles>,
-    mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
-) {
-    let old_heights = &r_gpu_data.get_heights();
-    let texture_size = r_shader_config.texture_size;
-
-    // let _ = write_vec_to_file("old_heights.txt", old_heights);
-
-    // 2x upsampling
-    let double_size = texture_size * 2;
-    let heights = resize_heightmap(old_heights, texture_size, double_size);
-
-    // let _ = write_vec_to_file("heights.txt", &heights);
-
-    let width_scale = 20000.0 / (double_size - 1) as f32; // Source: from the original size in C++ implementation: celldiagonal = Vector2((b[0] - a[0]) / (nx - 1), (b[1] - a[1]) / (ny - 1));
-    let (positions, indices) = generate_terrain(&heights, double_size, width_scale);
-
-    // NOTE: Overwrite the existing handle with the one pointing to updated data
-    r_buffer_handles.height_a = shaders::prepare_ssbo(&mut buffers, heights.clone());
-
-    // Reinitialize buffers with new size
-    let buffer_size = double_size * double_size;
-    r_buffer_handles.height_b = shaders::prepare_ssbo(&mut buffers, vec![0.0; buffer_size]);
-    r_buffer_handles.stream_a = shaders::prepare_ssbo(&mut buffers, vec![0.0; buffer_size]);
-    r_buffer_handles.stream_b = shaders::prepare_ssbo(&mut buffers, vec![0.0; buffer_size]);
-    r_buffer_handles.sed_a = shaders::prepare_ssbo(&mut buffers, vec![0.0; buffer_size]);
-    r_buffer_handles.sed_b = shaders::prepare_ssbo(&mut buffers, vec![0.0; buffer_size]);
-    r_buffer_handles.debug_a = shaders::prepare_ssbo(&mut buffers, vec![0.0; buffer_size]);
-    r_buffer_handles.debug_b = shaders::prepare_ssbo(&mut buffers, vec![0.0; buffer_size]);
-    r_buffer_handles.vertex_positions =
-        shaders::prepare_ssbo(&mut buffers, vec![Vec3::ZERO; buffer_size]);
-
-    // Override the observer
-    commands
-        .spawn(Readback::buffer(r_buffer_handles.vertex_positions.clone()))
-        .observe(store_gpu_positions);
-
-    // Create the custom material and add it to the materials assets
-    let terrain_material_handle = materials.add(shaders::TerrainMaterial {
-        height_buffer_handle: r_buffer_handles.height_a.clone(),
-        positions_buffer_handle: r_buffer_handles.vertex_positions.clone(),
-    });
-
-    let mut terrain_mesh = Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
-    );
-    terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions.clone());
-    terrain_mesh.insert_indices(Indices::U32(indices));
-    terrain_mesh.compute_normals();
-
-    commands.entity(s_terrain.into_inner()).insert((
-        Mesh3d(meshes.add(terrain_mesh)),
-        MeshMaterial3d(terrain_material_handle.clone()),
-    ));
-
-    // Overwrite the dummy default values for the uniforms
-    // TODO: Make this nicer...
-    let a = &positions[0];
-    let b = &positions[double_size * double_size - 1];
-    // NOTE: We take the `x` and `z` coordinate here, since that is what forms the surface of the grid, `y` is up
-    let a = Vec2::new(a[0], a[2]);
-    let b = Vec2::new(b[0], b[2]);
-    let cell_size = (b - a) / (double_size - 1) as f32;
-
-    // NOTE: Overwrite the dummy parameters
-    commands.insert_resource(shaders::ErosionUniforms {
-        nx: double_size as i32,
-        ny: double_size as i32,
-        cell_size,
-        a,
-        b,
-        ..default()
-    });
-    commands.insert_resource(shaders::DepositionUniforms {
-        nx: double_size as i32,
-        ny: double_size as i32,
-        cell_size,
-        a,
-        b,
-        ..default()
-    });
-    commands.insert_resource(shaders::ThermalUniforms {
-        nx: double_size as i32,
-        ny: double_size as i32,
-        cell_size,
-        a,
-        b,
-        ..default()
-    });
-
-    r_shader_config.texture_size = double_size;
-
-    info!(?cell_size, ?a, ?b, "updated uniforms");
-}
-
 fn change_terrain(
     s_terrain: Single<Entity, With<Terrain>>,
     mut commands: Commands,
@@ -426,6 +314,10 @@ fn change_terrain(
         Mesh3d(meshes.add(terrain_mesh)),
         MeshMaterial3d(terrain_material_handle.clone()),
     ));
+}
+
+fn upscale_texture_size(mut r_shader_config: If<ResMut<shaders::ShaderConfig>>) {
+    r_shader_config.texture_size *= 2;
 }
 
 fn generate_terrain(

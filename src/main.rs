@@ -3,7 +3,6 @@ use bevy::dev_tools::fps_overlay::{FpsOverlayConfig, FpsOverlayPlugin, FrameTime
 use bevy::input::common_conditions;
 use bevy::pbr::wireframe::{WireframeConfig, WireframePlugin};
 use bevy::prelude::*;
-use bevy::render::extract_resource::ExtractResource;
 use bevy_inspector_egui::bevy_egui;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 
